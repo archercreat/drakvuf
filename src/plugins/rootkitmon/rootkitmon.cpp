@@ -598,6 +598,8 @@ event_response_t rootkitmon::final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info
         check_driver_objects(drakvuf, info);
         check_descriptors(drakvuf, info);
 
+        ci::check(drakvuf, info, this);
+
         done_final_analysis = true;
     }
     return VMI_EVENT_RESPONSE_NONE;
@@ -873,87 +875,90 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
         this->winver = build_info.version;
     }
 
-    ci::initialize(drakvuf, this, config);
+    if (!ci::initialize(drakvuf, this, config))
+    {
+        throw -1;
+    }
 
-    // for (const auto& target : hook_targets)
-    // {
-    //     auto hook = createSyscallHook(target, &rootkitmon::callback_hooks_cb);
-    //     if (!hook)
-    //     {
-    //         PRINT_DEBUG("[ROOTKITMON] Failed to hook %s\n", target);
-    //     }
-    //     else
-    //     {
-    //         hook->trap_->name = target;
-    //         this->syscall_hooks.push_back(std::move(hook));
-    //     }
-    // }
+    for (const auto& target : hook_targets)
+    {
+        auto hook = createSyscallHook(target, &rootkitmon::callback_hooks_cb);
+        if (!hook)
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to hook %s\n", target);
+        }
+        else
+        {
+            hook->trap_->name = target;
+            this->syscall_hooks.push_back(std::move(hook));
+        }
+    }
 
-    // if (!config->fwpkclnt_profile)
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");
-    // }
-    // else
-    // {
-    //     manual_hooks.push_back(register_profile_hook(drakvuf, config->fwpkclnt_profile, "fwpkclnt.sys", "FwpmCalloutAdd0", wfp_cb));
-    // }
+    if (!config->fwpkclnt_profile)
+    {
+        PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");
+    }
+    else
+    {
+        manual_hooks.push_back(register_profile_hook(drakvuf, config->fwpkclnt_profile, "fwpkclnt.sys", "FwpmCalloutAdd0", wfp_cb));
+    }
 
-    // if (!config->fltmgr_profile)
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] No profile for fltmgr.sys was given!\n");
-    // }
-    // else
-    // {
-    //     manual_hooks.push_back(register_profile_hook(drakvuf, config->fltmgr_profile, "fltmgr.sys", "FltRegisterFilter", flt_cb));
-    // }
+    if (!config->fltmgr_profile)
+    {
+        PRINT_DEBUG("[ROOTKITMON] No profile for fltmgr.sys was given!\n");
+    }
+    else
+    {
+        manual_hooks.push_back(register_profile_hook(drakvuf, config->fltmgr_profile, "fltmgr.sys", "FltRegisterFilter", flt_cb));
+    }
 
-    // drakvuf_enumerate_drivers(drakvuf, driver_visitor, static_cast<void*>(this));
+    drakvuf_enumerate_drivers(drakvuf, driver_visitor, static_cast<void*>(this));
 
-    // vmi_lock_guard vmi(drakvuf);
+    vmi_lock_guard vmi(drakvuf);
 
-    // // Hook HalPrivateDispatchTable on write
-    // if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] Failed to translate symbol to physical address\n");
-    //     throw -1;
-    // }
-    // manual_hooks.push_back(register_mem_hook(halprivatetable_overwrite_cb, this->halprivatetable, VMI_MEMACCESS_W));
+    // Hook HalPrivateDispatchTable on write
+    if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to translate symbol to physical address\n");
+        throw -1;
+    }
+    manual_hooks.push_back(register_mem_hook(halprivatetable_overwrite_cb, this->halprivatetable, VMI_MEMACCESS_W));
 
-    // if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size))
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] Failed to get _OBJECT_HEADER struct size\n");
-    //     throw -1;
-    // }
+    if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to get _OBJECT_HEADER struct size\n");
+        throw -1;
+    }
 
-    // if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] Failed to translate ObTypeIndexTable to VA\n");
-    //     throw -1;
-    // }
+    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to translate ObTypeIndexTable to VA\n");
+        throw -1;
+    }
 
-    // if (this->winver == VMI_OS_WINDOWS_10 && VMI_SUCCESS != vmi_read_8_ksym(vmi, "ObHeaderCookie", &this->ob_header_cookie))
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] Failed to locate header cookie\n");
-    //     throw -1;
-    // }
+    if (this->winver == VMI_OS_WINDOWS_10 && VMI_SUCCESS != vmi_read_8_ksym(vmi, "ObHeaderCookie", &this->ob_header_cookie))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to locate header cookie\n");
+        throw -1;
+    }
 
-    // if (!this->is32bit)
-    //     for (const auto& drv_object : enumerate_driver_objects(vmi))
-    //     {
-    //         auto address = drv_object + offsets[DRIVER_OBJECT_STARTIO];
-    //         // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
-    //         driver_object_checksums[drv_object] = calc_checksum(vmi, address, this->guest_ptr_size * 30);
-    //         // Enumerate all device_stacks of a particular driver
-    //         driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
-    //     }
+    if (!this->is32bit)
+        for (const auto& drv_object : enumerate_driver_objects(vmi))
+        {
+            auto address = drv_object + offsets[DRIVER_OBJECT_STARTIO];
+            // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
+            driver_object_checksums[drv_object] = calc_checksum(vmi, address, this->guest_ptr_size * 30);
+            // Enumerate all device_stacks of a particular driver
+            driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
+        }
 
-    // // Enumerate descriptors on all cores
-    // if (!enumerate_cores(vmi))
-    // {
-    //     PRINT_DEBUG("[ROOTKITMON] Failed to enumerate descriptors\n");
-    //     throw -1;
-    // }
-    // PRINT_DEBUG("[ROOTKITMON] Done init\n");
+    // Enumerate descriptors on all cores
+    if (!enumerate_cores(vmi))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to enumerate descriptors\n");
+        throw -1;
+    }
+    PRINT_DEBUG("[ROOTKITMON] Done init\n");
 }
 
 rootkitmon::~rootkitmon()

@@ -125,6 +125,7 @@ namespace ci
         size_t ci_callbacks_sz;
     };
 
+    // Global data storage
     static ci_wrapper g_data;
 
     static inline size_t get_ci_table_size(vmi_instance_t vmi)
@@ -139,11 +140,10 @@ namespace ci
         return 0;
     }
 
-    static event_response_t ci_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+    static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     {
         auto plugin = GetTrapPlugin<rootkitmon>(info);
         check(drakvuf, info, plugin);
-        PRINT_ROOTKITMON("[ROOTKITMON::CI] check g_CiEnabled\n");
         return VMI_EVENT_RESPONSE_NONE;
     }
 
@@ -164,10 +164,7 @@ namespace ci
         {
             // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located in ci.dll module
             if (!config->ci_profile)
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] No profile for ci.dll was given!\n");
                 return false;
-            }
 
             // Extract g_CiOptions rva from json file
             auto profile_json = json_object_from_file(config->ci_profile);
@@ -183,7 +180,6 @@ namespace ci
                 PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find g_CiOptions RVA in json for ci.dll\n");
                 return false;
             }
-
             json_object_put(profile_json);
 
             addr_t list_head;
@@ -208,18 +204,14 @@ namespace ci
                 return false;
             }
         }
-
-        if (VMI_SUCCESS != vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &g_data.ci_enabled))
-        {
-            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read g_CiEnabled\n");
-            return false;
-        }
-
+        
+        // Fill initial values
+        vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &g_data.ci_enabled);
         g_data.ci_callbacks_sz = get_ci_table_size(vmi);
         g_data.ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
 
-        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", ci_cb));
-        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", ci_cb));
+        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
+        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
 
         return true;
     }

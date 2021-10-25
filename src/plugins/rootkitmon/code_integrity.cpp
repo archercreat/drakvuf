@@ -101,67 +101,152 @@
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
  ***************************************************************************/
-#pragma once
-#include <set>
-#include "plugins/plugins_ex.h"
-#include "private.h"
+#include <libvmi/libvmi.h>
+#include <libdrakvuf/libdrakvuf.h>
+#include "plugins/output_format.h"
+#include "rootkitmon.h"
 
-struct rootkitmon_config
+#define VISTA_RTM_VER   6000    // Windows Vista SP0
+#define W7RTM_VER       7600    // Windows 7 SP0
+#define W7SP1_VER       7601    // Windows 7 SP1
+#define W8RTM_VER       9200    // Windows 8 SP0
+#define W81RTM_VER      9600    // Windows 8.1 RTM
+
+namespace ci
 {
-    const char* fwpkclnt_profile;
-    const char* fltmgr_profile;
-    const char* ci_profile;
-};
+    struct ci_wrapper
+    {
+        uint8_t ci_enabled;
+        sha256_checksum_t ci_callbacks;
 
-class rootkitmon : public pluginex
-{
-public:
-    rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output);
-    ~rootkitmon();
+        addr_t ci_enabled_va;
+        addr_t ci_callbacks_va;
 
-    event_response_t callback_hooks_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    event_response_t final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+        size_t ci_callbacks_sz;
+    };
 
-    std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,
-        const char* func_name, hook_cb_t callback);
-    std::unique_ptr<libhook::ManualHook> register_reg_hook(hook_cb_t callback, register_t reg);
-    std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa, vmi_mem_access_t access);
+    static ci_wrapper g_data;
 
-    std::set<driver_t> enumerate_driver_objects(vmi_instance_t vmi);
-    std::set<driver_t> enumerate_directory(vmi_instance_t vmi, addr_t addr);
-    unicode_string_t* get_object_type_name(vmi_instance_t vmi, addr_t object);
-    device_stack_t enumerate_driver_stacks(vmi_instance_t vmi, addr_t driver_object);
-    bool enumerate_cores(vmi_instance_t vmi);
+    static inline size_t get_ci_table_size(vmi_instance_t vmi)
+    {
+        // Table size is heavily dependent on build version but for win 8.1 and
+        // higher we just assume table size is 30 elements long
+        uint16_t ver = vmi_get_win_buildnumber(vmi);
+        if (ver >= VISTA_RTM_VER && ver <= W7SP1_VER)
+            return 3;
+        else if (ver >= W8RTM_VER)
+            return 30;
+        return 0;
+    }
 
-    void check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+    static event_response_t ci_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+    {
+        auto plugin = GetTrapPlugin<rootkitmon>(info);
+        check(drakvuf, info, plugin);
+        PRINT_ROOTKITMON("[ROOTKITMON::CI] check g_CiEnabled\n");
+        return VMI_EVENT_RESPONSE_NONE;
+    }
 
-    bool stop();
+    bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
+    {
+        vmi_lock_guard vmi(drakvuf);
 
-    const output_format_t format;
-    win_ver_t winver;
+        if (vmi_get_win_buildnumber(vmi) < W8RTM_VER)
+        {
+            if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &g_data.ci_enabled_va) ||
+                VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &g_data.ci_callbacks_va))
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
+                return false;
+            }
+        }
+        else
+        {
+            // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located in ci.dll module
+            if (!config->ci_profile)
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] No profile for ci.dll was given!\n");
+                return false;
+            }
 
-    size_t* offsets;
-    size_t guest_ptr_size;
-    bool is32bit;
-    size_t object_header_size;
+            // Extract g_CiOptions rva from json file
+            auto profile_json = json_object_from_file(config->ci_profile);
+            if (!profile_json)
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to load JSON debug info for ci.dll\n");
+                return false;
+            }
+            
+            addr_t ci_options_rva;
+            if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find g_CiOptions RVA in json for ci.dll\n");
+                return false;
+            }
 
-    bool done_final_analysis;
-    bool not_supported;
+            json_object_put(profile_json);
 
-    addr_t halprivatetable;
-    addr_t type_idx_table;
-    uint8_t ob_header_cookie;
+            addr_t list_head;
+            if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read PsLoadedModuleList\n");
+                return false;
+            }
 
-    std::unordered_map<driver_t, std::vector<checksum_data_t>> driver_sections_checksums;
-    std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
-    // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
-    std::unordered_map<driver_t, device_stack_t> driver_stacks;
-    // VCPU -> Descriptor
-    std::unordered_map<unsigned int, descriptors_t> descriptors;
-    // VCPU -> MSR_LSTAR
-    std::unordered_map<unsigned int, addr_t> msr_lstar;
-    std::vector<std::unique_ptr<libhook::ManualHook>> manual_hooks;
-    std::vector<std::unique_ptr<libhook::SyscallHook>> syscall_hooks;
-};
+            addr_t ci_module_base;
+            if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to get ci.dll\n");
+                return false;
+            }
+
+            g_data.ci_enabled_va = ci_module_base + ci_options_rva;
+
+            if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &g_data.ci_callbacks_va))
+            {
+                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find SeCiCallbacks\n");
+                return false;
+            }
+        }
+
+        if (VMI_SUCCESS != vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &g_data.ci_enabled))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read g_CiEnabled\n");
+            return false;
+        }
+
+        g_data.ci_callbacks_sz = get_ci_table_size(vmi);
+        g_data.ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
+
+        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", ci_cb));
+        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", ci_cb));
+
+        return true;
+    }
+
+    void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin)
+    {
+        vmi_lock_guard vmi(drakvuf);
+
+        uint8_t ci_enabled;
+        if (VMI_SUCCESS != vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &ci_enabled))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read g_CiEnabled\n");
+            throw -1;
+        }
+
+        auto ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
+
+        if (g_data.ci_enabled != ci_enabled)
+        {
+            fmt::print(plugin->format, "rootkitmon", drakvuf, info,
+                keyval("Reason", fmt::Qstr("g_CiEnabled modification")));
+        }
+
+        if (g_data.ci_callbacks != ci_callbacks)
+        {
+            fmt::print(plugin->format, "rootkitmon", drakvuf, info,
+                keyval("Reason", fmt::Qstr("g_CiCallbacks modification")));
+        }
+    }
+}

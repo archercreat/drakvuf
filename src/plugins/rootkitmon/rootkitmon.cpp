@@ -104,10 +104,8 @@
 #include <glib.h>
 #include <libvmi/libvmi.h>
 #include <unordered_map>
-#include <set>
 #include "plugins/output_format.h"
 #include "rootkitmon.h"
-#include "private.h"
 
 std::vector<const char*> hook_targets =
 {
@@ -125,7 +123,7 @@ std::vector<const char*> hook_targets =
     "SeRegisterLogonSessionTerminatedRoutine",
 };
 
-static bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr)
+/*static */bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr)
 {
     addr_t temp_va;
     if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, symbol, &temp_va))
@@ -181,7 +179,7 @@ static std::vector<std::pair<addr_t, size_t>> get_pe_code_sections(void* module,
  * Given address and size, calculate SHA256 of a given memory region.
  * Partially taken from memdump plugin.
  */
-static sha256_checksum_t calc_checksum(vmi_instance_t vmi, addr_t address, size_t size)
+sha256_checksum_t calc_checksum(vmi_instance_t vmi, addr_t address, size_t size)
 {
     sha256_checksum_t out{ 0 };
 
@@ -267,7 +265,7 @@ static std::vector<std::pair<addr_t, gdt_entry_t>> enumerate_gdt(vmi_instance_t 
 /**
  * This is the callback of the fwpkclnt.sys function FwpmCalloutAdd0.
 */
-static event_response_t wfp_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+/*static */event_response_t wfp_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto plugin = static_cast<rootkitmon*>(info->trap->data);
     fmt::print(plugin->format, "rootkitmon", drakvuf, info,
@@ -278,7 +276,7 @@ static event_response_t wfp_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 /**
  * This is the callback of the fltmgr.sys function FltRegisterFilter.
 */
-static event_response_t flt_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+/*static */event_response_t flt_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto plugin = static_cast<rootkitmon*>(info->trap->data);
     fmt::print(plugin->format, "rootkitmon", drakvuf, info,
@@ -290,7 +288,7 @@ static event_response_t flt_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
  * This is the callback of the memory trap.
  * If an instruction writes into the page where HalPrivateDispatchTable located, this callback is executed.
 */
-static event_response_t halprivatetable_overwrite_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+/*static */event_response_t halprivatetable_overwrite_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto plugin = static_cast<rootkitmon*>(info->trap->data);
     // Table size is unknown, assume 0x100 bytes
@@ -860,6 +858,12 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
         this->is32bit = false;
     }
 
+    if (!drakvuf_get_kernel_struct_members_array_rva(drakvuf, offset_names, __OFFSET_MAX, this->offsets))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to get kernel struct member offsets\n");
+        throw -1;
+    }
+
     {
         vmi_lock_guard vmi(drakvuf);
         win_build_info_t build_info;
@@ -869,91 +873,87 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
         this->winver = build_info.version;
     }
 
-    for (const auto& target : hook_targets)
-    {
-        auto hook = createSyscallHook(target, &rootkitmon::callback_hooks_cb);
-        if (!hook)
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to hook %s\n", target);
-        }
-        else
-        {
-            hook->trap_->name = target;
-            this->syscall_hooks.push_back(std::move(hook));
-        }
-    }
+    ci::initialize(drakvuf, this, config);
 
-    if (!config->fwpkclnt_profile)
-    {
-        PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");
-    }
-    else
-    {
-        manual_hooks.push_back(register_profile_hook(drakvuf, config->fwpkclnt_profile, "fwpkclnt.sys", "FwpmCalloutAdd0", wfp_cb));
-    }
+    // for (const auto& target : hook_targets)
+    // {
+    //     auto hook = createSyscallHook(target, &rootkitmon::callback_hooks_cb);
+    //     if (!hook)
+    //     {
+    //         PRINT_DEBUG("[ROOTKITMON] Failed to hook %s\n", target);
+    //     }
+    //     else
+    //     {
+    //         hook->trap_->name = target;
+    //         this->syscall_hooks.push_back(std::move(hook));
+    //     }
+    // }
 
-    if (!config->fltmgr_profile)
-    {
-        PRINT_DEBUG("[ROOTKITMON] No profile for fltmgr.sys was given!\n");
-    }
-    else
-    {
-        manual_hooks.push_back(register_profile_hook(drakvuf, config->fltmgr_profile, "fltmgr.sys", "FltRegisterFilter", flt_cb));
-    }
+    // if (!config->fwpkclnt_profile)
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");
+    // }
+    // else
+    // {
+    //     manual_hooks.push_back(register_profile_hook(drakvuf, config->fwpkclnt_profile, "fwpkclnt.sys", "FwpmCalloutAdd0", wfp_cb));
+    // }
 
-    if (!drakvuf_get_kernel_struct_members_array_rva(drakvuf, offset_names, __OFFSET_MAX, this->offsets))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to get kernel struct member offsets\n");
-        throw -1;
-    }
+    // if (!config->fltmgr_profile)
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] No profile for fltmgr.sys was given!\n");
+    // }
+    // else
+    // {
+    //     manual_hooks.push_back(register_profile_hook(drakvuf, config->fltmgr_profile, "fltmgr.sys", "FltRegisterFilter", flt_cb));
+    // }
 
-    drakvuf_enumerate_drivers(drakvuf, driver_visitor, static_cast<void*>(this));
+    // drakvuf_enumerate_drivers(drakvuf, driver_visitor, static_cast<void*>(this));
 
-    vmi_lock_guard vmi(drakvuf);
+    // vmi_lock_guard vmi(drakvuf);
 
-    // Hook HalPrivateDispatchTable on write
-    if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to translate symbol to physical address\n");
-        throw -1;
-    }
-    manual_hooks.push_back(register_mem_hook(halprivatetable_overwrite_cb, this->halprivatetable, VMI_MEMACCESS_W));
+    // // Hook HalPrivateDispatchTable on write
+    // if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] Failed to translate symbol to physical address\n");
+    //     throw -1;
+    // }
+    // manual_hooks.push_back(register_mem_hook(halprivatetable_overwrite_cb, this->halprivatetable, VMI_MEMACCESS_W));
 
-    if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to get _OBJECT_HEADER struct size\n");
-        throw -1;
-    }
+    // if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size))
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] Failed to get _OBJECT_HEADER struct size\n");
+    //     throw -1;
+    // }
 
-    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to translate ObTypeIndexTable to VA\n");
-        throw -1;
-    }
+    // if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] Failed to translate ObTypeIndexTable to VA\n");
+    //     throw -1;
+    // }
 
-    if (this->winver == VMI_OS_WINDOWS_10 && VMI_SUCCESS != vmi_read_8_ksym(vmi, "ObHeaderCookie", &this->ob_header_cookie))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to locate header cookie\n");
-        throw -1;
-    }
+    // if (this->winver == VMI_OS_WINDOWS_10 && VMI_SUCCESS != vmi_read_8_ksym(vmi, "ObHeaderCookie", &this->ob_header_cookie))
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] Failed to locate header cookie\n");
+    //     throw -1;
+    // }
 
-    if (!this->is32bit)
-        for (const auto& drv_object : enumerate_driver_objects(vmi))
-        {
-            auto address = drv_object + offsets[DRIVER_OBJECT_STARTIO];
-            // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
-            driver_object_checksums[drv_object] = calc_checksum(vmi, address, this->guest_ptr_size * 30);
-            // Enumerate all device_stacks of a particular driver
-            driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
-        }
+    // if (!this->is32bit)
+    //     for (const auto& drv_object : enumerate_driver_objects(vmi))
+    //     {
+    //         auto address = drv_object + offsets[DRIVER_OBJECT_STARTIO];
+    //         // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
+    //         driver_object_checksums[drv_object] = calc_checksum(vmi, address, this->guest_ptr_size * 30);
+    //         // Enumerate all device_stacks of a particular driver
+    //         driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
+    //     }
 
-    // Enumerate descriptors on all cores
-    if (!enumerate_cores(vmi))
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to enumerate descriptors\n");
-        throw -1;
-    }
-    PRINT_DEBUG("[ROOTKITMON] Done init\n");
+    // // Enumerate descriptors on all cores
+    // if (!enumerate_cores(vmi))
+    // {
+    //     PRINT_DEBUG("[ROOTKITMON] Failed to enumerate descriptors\n");
+    //     throw -1;
+    // }
+    // PRINT_DEBUG("[ROOTKITMON] Done init\n");
 }
 
 rootkitmon::~rootkitmon()

@@ -336,6 +336,7 @@ if PLUGIN_ROOTKITMON
 sources += rootkitmon/rootkitmon.cpp
 sources += rootkitmon/rootkitmon.h
 sources += rootkitmon/private.h
+sources += rootkitmon/code_integrity.cpp
 endif
 
 ###############################################################################

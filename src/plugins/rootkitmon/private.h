@@ -307,4 +307,22 @@ struct descriptors_t
     std::vector<std::pair<addr_t, gdt_entry_t>> gdt;
 };
 
+#define PRINT_ROOTKITMON(...) \
+    do { \
+        eprint_current_time(); fprintf (stderr, __VA_ARGS__); \
+    } while (0)
+
+/* forward declaration */
+class rootkitmon;
+struct rootkitmon_config;
+
+bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr);
+sha256_checksum_t calc_checksum(vmi_instance_t vmi, addr_t address, size_t size);
+
+namespace ci
+{
+    bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config);
+    void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin);
+}
+
 #endif

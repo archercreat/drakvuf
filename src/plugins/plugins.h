@@ -168,6 +168,7 @@ struct plugins_options
     bool hidsim_monitor_gui;            // PLUGIN_HIDSIM
     const char* fwpkclnt_profile;       // PLUGIN_ROOTKITMON
     const char* fltmgr_profile;         // PLUGIN_ROOTKITMON
+    const char* ci_profile;             // PLUGIN_ROOTKITMON
 };
 
 typedef enum drakvuf_plugin

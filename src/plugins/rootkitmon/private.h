@@ -321,8 +321,8 @@ sha256_checksum_t calc_checksum(vmi_instance_t vmi, addr_t address, size_t size)
 
 namespace ci
 {
-    bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config);
-    void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin);
+bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config);
+void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin);
 }
 
 #endif

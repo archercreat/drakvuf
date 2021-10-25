@@ -114,131 +114,131 @@
 
 namespace ci
 {
-    struct ci_wrapper
+struct ci_wrapper
+{
+    uint8_t ci_enabled;
+    sha256_checksum_t ci_callbacks;
+
+    addr_t ci_enabled_va;
+    addr_t ci_callbacks_va;
+
+    size_t ci_callbacks_sz;
+};
+
+// Global data storage
+static ci_wrapper g_data;
+
+static inline size_t get_ci_table_size(vmi_instance_t vmi)
+{
+    // Table size is heavily dependent on build version but for win 8.1 and
+    // higher we just assume table size is 30 elements long
+    uint16_t ver = vmi_get_win_buildnumber(vmi);
+    if (ver >= VISTA_RTM_VER && ver <= W7SP1_VER)
+        return 3;
+    else if (ver >= W8RTM_VER)
+        return 30;
+    return 0;
+}
+
+static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto plugin = GetTrapPlugin<rootkitmon>(info);
+    check(drakvuf, info, plugin);
+    return VMI_EVENT_RESPONSE_NONE;
+}
+
+bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
+{
+    vmi_lock_guard vmi(drakvuf);
+
+    if (vmi_get_win_buildnumber(vmi) < W8RTM_VER)
     {
-        uint8_t ci_enabled;
-        sha256_checksum_t ci_callbacks;
-
-        addr_t ci_enabled_va;
-        addr_t ci_callbacks_va;
-
-        size_t ci_callbacks_sz;
-    };
-
-    // Global data storage
-    static ci_wrapper g_data;
-
-    static inline size_t get_ci_table_size(vmi_instance_t vmi)
-    {
-        // Table size is heavily dependent on build version but for win 8.1 and
-        // higher we just assume table size is 30 elements long
-        uint16_t ver = vmi_get_win_buildnumber(vmi);
-        if (ver >= VISTA_RTM_VER && ver <= W7SP1_VER)
-            return 3;
-        else if (ver >= W8RTM_VER)
-            return 30;
-        return 0;
-    }
-
-    static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-    {
-        auto plugin = GetTrapPlugin<rootkitmon>(info);
-        check(drakvuf, info, plugin);
-        return VMI_EVENT_RESPONSE_NONE;
-    }
-
-    bool initialize(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
-    {
-        vmi_lock_guard vmi(drakvuf);
-
-        if (vmi_get_win_buildnumber(vmi) < W8RTM_VER)
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &g_data.ci_enabled_va) ||
+            VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &g_data.ci_callbacks_va))
         {
-            if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &g_data.ci_enabled_va) ||
-                VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &g_data.ci_callbacks_va))
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
-                return false;
-            }
-        }
-        else
-        {
-            // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located in ci.dll module
-            if (!config->ci_profile)
-                return false;
-
-            // Extract g_CiOptions rva from json file
-            auto profile_json = json_object_from_file(config->ci_profile);
-            if (!profile_json)
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to load JSON debug info for ci.dll\n");
-                return false;
-            }
-            
-            addr_t ci_options_rva;
-            if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find g_CiOptions RVA in json for ci.dll\n");
-                return false;
-            }
-            json_object_put(profile_json);
-
-            addr_t list_head;
-            if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read PsLoadedModuleList\n");
-                return false;
-            }
-
-            addr_t ci_module_base;
-            if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to get ci.dll\n");
-                return false;
-            }
-
-            g_data.ci_enabled_va = ci_module_base + ci_options_rva;
-
-            if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &g_data.ci_callbacks_va))
-            {
-                PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find SeCiCallbacks\n");
-                return false;
-            }
-        }
-        
-        // Fill initial values
-        vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &g_data.ci_enabled);
-        g_data.ci_callbacks_sz = get_ci_table_size(vmi);
-        g_data.ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
-
-        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
-        plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
-
-        return true;
-    }
-
-    void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin)
-    {
-        vmi_lock_guard vmi(drakvuf);
-
-        uint8_t ci_enabled;
-        if (VMI_SUCCESS != vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &ci_enabled))
-        {
-            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read g_CiEnabled\n");
-            throw -1;
-        }
-
-        auto ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
-
-        if (g_data.ci_enabled != ci_enabled)
-        {
-            fmt::print(plugin->format, "rootkitmon", drakvuf, info,
-                keyval("Reason", fmt::Qstr("g_CiEnabled modification")));
-        }
-
-        if (g_data.ci_callbacks != ci_callbacks)
-        {
-            fmt::print(plugin->format, "rootkitmon", drakvuf, info,
-                keyval("Reason", fmt::Qstr("g_CiCallbacks modification")));
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
+            return false;
         }
     }
+    else
+    {
+        // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located in ci.dll module
+        if (!config->ci_profile)
+            return false;
+
+        // Extract g_CiOptions rva from json file
+        auto profile_json = json_object_from_file(config->ci_profile);
+        if (!profile_json)
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to load JSON debug info for ci.dll\n");
+            return false;
+        }
+
+        addr_t ci_options_rva;
+        if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find g_CiOptions RVA in json for ci.dll\n");
+            return false;
+        }
+        json_object_put(profile_json);
+
+        addr_t list_head;
+        if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read PsLoadedModuleList\n");
+            return false;
+        }
+
+        addr_t ci_module_base;
+        if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to get ci.dll\n");
+            return false;
+        }
+
+        g_data.ci_enabled_va = ci_module_base + ci_options_rva;
+
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &g_data.ci_callbacks_va))
+        {
+            PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to find SeCiCallbacks\n");
+            return false;
+        }
+    }
+
+    // Fill initial values
+    vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &g_data.ci_enabled);
+    g_data.ci_callbacks_sz = get_ci_table_size(vmi);
+    g_data.ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
+
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
+
+    return true;
+}
+
+void check(drakvuf_t drakvuf, drakvuf_trap_info_t* info, rootkitmon* plugin)
+{
+    vmi_lock_guard vmi(drakvuf);
+
+    uint8_t ci_enabled;
+    if (VMI_SUCCESS != vmi_read_8_va(vmi, g_data.ci_enabled_va, 4, &ci_enabled))
+    {
+        PRINT_ROOTKITMON("[ROOTKITMON::CI] Failed to read g_CiEnabled\n");
+        throw -1;
+    }
+
+    auto ci_callbacks = calc_checksum(vmi, g_data.ci_callbacks_va, g_data.ci_callbacks_sz);
+
+    if (g_data.ci_enabled != ci_enabled)
+    {
+        fmt::print(plugin->format, "rootkitmon", drakvuf, info,
+            keyval("Reason", fmt::Qstr("g_CiEnabled modification")));
+    }
+
+    if (g_data.ci_callbacks != ci_callbacks)
+    {
+        fmt::print(plugin->format, "rootkitmon", drakvuf, info,
+            keyval("Reason", fmt::Qstr("g_CiCallbacks modification")));
+    }
+}
 }

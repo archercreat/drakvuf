@@ -101,71 +101,166 @@
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
  ***************************************************************************/
-#pragma once
+#include <libdrakvuf/libdrakvuf.h>
+#include <libvmi/libvmi.h>
+#include <libdrakvuf/private.h>
+#include <plugins/plugins_ex.h>
+#include <plugins/output_format.h>
 
-#include "plugins/plugins_ex.h"
-#include "private.h"
+#include "callback_integrity.h"
 
-struct rootkitmon_config
+static constexpr uint16_t win_vista_ver     = 6000;
+static constexpr uint16_t win_vista_sp1_ver = 6001;
+static constexpr uint16_t win_8_1_ver       = 9600;
+
+struct pass_ctx
 {
-    const char* fwpkclnt_profile;
-    const char* fltmgr_profile;
+    addr_t addr;
+    std::string name = "<Unknown>";
+
+    addr_t name_rva, base_rva, size_rva;
+
+    explicit pass_ctx(drakvuf_t drakvuf, addr_t addr) : addr(addr)
+    {
+        if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "BaseDllName",  &this->name_rva) ||
+            !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",      &this->base_rva) ||
+            !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage",  &this->size_rva))
+        {
+            throw -1;
+        }
+    };
 };
 
-// forward declaration
-struct cb_integrity_t;
-
-class rootkitmon : public pluginex
+static inline size_t get_process_cb_table_size(uint16_t winver)
 {
-public:
-    rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output);
-    ~rootkitmon();
+    if (winver >= win_vista_sp1_ver)
+        return 64;
+    else if (winver == win_vista_ver)
+        return 12;
+    else
+        return 8;
+}
 
-    event_response_t callback_hooks_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    event_response_t final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+static inline size_t get_thread_cb_table_size(uint16_t winver)
+{
+    return (winver >= win_vista_ver ? 64 : 8);
+}
 
-    std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,
-        const char* func_name, hook_cb_t callback);
-    std::unique_ptr<libhook::ManualHook> register_reg_hook(hook_cb_t callback, register_t reg);
-    std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa, vmi_mem_access_t access);
+static inline size_t get_image_cb_table_size(uint16_t winver)
+{
+    return (winver >= win_8_1_ver ? 64 : 8);
+}
 
-    std::set<driver_t> enumerate_driver_objects(vmi_instance_t vmi);
-    std::set<driver_t> enumerate_directory(vmi_instance_t vmi, addr_t addr);
-    unicode_string_t* get_object_type_name(vmi_instance_t vmi, addr_t object);
-    device_stack_t enumerate_driver_stacks(vmi_instance_t vmi, addr_t driver_object);
-    bool enumerate_cores(vmi_instance_t vmi);
+static inline size_t get_cb_table_size(vmi_instance_t vmi, const std::string& type)
+{
+    uint16_t winver = vmi_get_win_buildnumber(vmi);
+    if (type == "image")
+        return get_image_cb_table_size(winver);
+    else if (type == "process")
+        return get_process_cb_table_size(winver);
+    else
+        return get_thread_cb_table_size(winver);
+}
 
-    void check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
+{
+    auto data = static_cast<pass_ctx*>(ctx);
 
-    bool stop();
+    vmi_lock_guard vmi(drakvuf);
+    addr_t base, size;
+    if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->base_rva, 4, &base) ||
+        VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->size_rva, 4, &size))
+    {
+        throw -1;
+    }
 
-    const output_format_t format;
-    win_ver_t winver;
+    if (data->addr >= base && data->addr < base + size)
+    {
+        unicode_string_t* module_name = drakvuf_read_unicode_va(vmi, ldr_table + data->name_rva, 4);
+        if (module_name && module_name->contents)
+        {
+            std::string str_name{ reinterpret_cast<char*>(module_name->contents) };
+            data->name = std::move(str_name);
+            vmi_free_unicode_str(module_name);
+        }
+    }
+}
 
-    size_t* offsets;
-    size_t guest_ptr_size;
-    bool is32bit;
-    size_t object_header_size;
+static inline std::string get_module_by_addr(drakvuf_t drakvuf, addr_t addr)
+{
+    pass_ctx ctx{ drakvuf, addr };
+    drakvuf_enumerate_drivers(drakvuf, driver_visitor, &ctx);
+    return ctx.name;
+}
 
-    bool done_final_analysis;
-    bool not_supported;
+cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
+{
+    const addr_t krnl_base = drakvuf_get_kernel_base(drakvuf);
+    const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
+    const size_t fast_ref  = (ptrsize == 8 ? 15 : 7);
 
-    addr_t halprivatetable;
-    addr_t type_idx_table;
-    uint8_t ob_header_cookie;
+    addr_t process_notify, thread_notify, image_notify;
+    if (!drakvuf_get_kernel_symbol_rva(drakvuf, "PspCreateProcessNotifyRoutine", &process_notify) ||
+        !drakvuf_get_kernel_symbol_rva(drakvuf, "PspCreateThreadNotifyRoutine", &thread_notify) ||
+        !drakvuf_get_kernel_symbol_rva(drakvuf, "PspLoadImageNotifyRoutine", &image_notify))
+    {
+        PRINT_CB("[ROOTKITMON::CB] Failed to get kernel cb list rva\n");
+        throw -1;
+    }
 
-    std::unique_ptr<cb_integrity_t> callback_integrity;
+    vmi_lock_guard vmi(drakvuf);
+    auto consume_callbacks = [&](const addr_t base, const size_t count) -> std::vector<addr_t>
+    {
+        std::vector<addr_t> out;
+        for (size_t i = 0; i < count; i++)
+        {
+            addr_t entry = 0, callback = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, base + i * ptrsize, 4, &entry))
+                throw -1;
 
-    std::unordered_map<driver_t, std::vector<checksum_data_t>> driver_sections_checksums;
-    std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
-    // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
-    std::unordered_map<driver_t, device_stack_t> driver_stacks;
-    // VCPU -> Descriptor
-    std::unordered_map<unsigned int, descriptors_t> descriptors;
-    // VCPU -> MSR_LSTAR
-    std::unordered_map<unsigned int, addr_t> msr_lstar;
-    std::vector<std::unique_ptr<libhook::ManualHook>> manual_hooks;
-    std::vector<std::unique_ptr<libhook::SyscallHook>> syscall_hooks;
-};
+            // Strip ref count
+            entry &= ~fast_ref;
+            if (!entry)
+                continue;
+
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, entry + ptrsize, 4, &callback))
+                throw -1;
+            out.push_back(callback);
+        }
+        return out;
+    };
+
+    this->process_cb = consume_callbacks(krnl_base + process_notify, get_cb_table_size(vmi, "process"));
+    this->thread_cb  = consume_callbacks(krnl_base + thread_notify,  get_cb_table_size(vmi, "thread"));
+    this->image_cb   = consume_callbacks(krnl_base + image_notify,   get_cb_table_size(vmi, "image"));
+}
+
+void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
+{
+    auto snapshot = std::make_unique<cb_integrity_t>(drakvuf);
+
+    auto check_callbacks = [&](const auto& lhs, const auto& rhs, const auto& list_name)
+    {
+        auto walk_list = [&](const auto& lhs, const auto& rhs, const auto& action)
+        {
+            for (const auto& cb : rhs)
+            {
+                if (std::find(lhs.begin(), lhs.end(), cb) == lhs.end())
+                {
+                    fmt::print(format, "rootkitmon", drakvuf, nullptr,
+                        keyval("Type", fmt::Qstr("Callback")),
+                        keyval("ListName", fmt::Qstr(list_name)),
+                        keyval("Module", fmt::Qstr(get_module_by_addr(drakvuf, cb))),
+                        keyval("Action", fmt::Qstr(action))
+                    );
+                }
+            }
+        };
+        walk_list(lhs, rhs, "Added");
+        walk_list(rhs, lhs, "Removed");
+    };
+
+    check_callbacks(this->process_cb, snapshot->process_cb, "ProcessNotify");
+    check_callbacks(this->thread_cb,  snapshot->thread_cb,  "ThreadNotify");
+    check_callbacks(this->image_cb,   snapshot->image_cb,   "ImageNotify");
+}

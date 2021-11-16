@@ -102,70 +102,22 @@
  *                                                                         *
  ***************************************************************************/
 #pragma once
+#include <vector>
+#include <cstdint>
+#include <array>
 
-#include "plugins/plugins_ex.h"
-#include "private.h"
+#define PRINT_CB(...) \
+    do { \
+            eprint_current_time(); \
+            fprintf (stderr, __VA_ARGS__); \
+    } while (0)
 
-struct rootkitmon_config
+struct cb_integrity_t
 {
-    const char* fwpkclnt_profile;
-    const char* fltmgr_profile;
-};
+    std::vector<addr_t> process_cb;
+    std::vector<addr_t> thread_cb;
+    std::vector<addr_t> image_cb;
 
-// forward declaration
-struct cb_integrity_t;
-
-class rootkitmon : public pluginex
-{
-public:
-    rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output);
-    ~rootkitmon();
-
-    event_response_t callback_hooks_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    event_response_t final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-
-    std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,
-        const char* func_name, hook_cb_t callback);
-    std::unique_ptr<libhook::ManualHook> register_reg_hook(hook_cb_t callback, register_t reg);
-    std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa, vmi_mem_access_t access);
-
-    std::set<driver_t> enumerate_driver_objects(vmi_instance_t vmi);
-    std::set<driver_t> enumerate_directory(vmi_instance_t vmi, addr_t addr);
-    unicode_string_t* get_object_type_name(vmi_instance_t vmi, addr_t object);
-    device_stack_t enumerate_driver_stacks(vmi_instance_t vmi, addr_t driver_object);
-    bool enumerate_cores(vmi_instance_t vmi);
-
-    void check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-
-    bool stop();
-
-    const output_format_t format;
-    win_ver_t winver;
-
-    size_t* offsets;
-    size_t guest_ptr_size;
-    bool is32bit;
-    size_t object_header_size;
-
-    bool done_final_analysis;
-    bool not_supported;
-
-    addr_t halprivatetable;
-    addr_t type_idx_table;
-    uint8_t ob_header_cookie;
-
-    std::unique_ptr<cb_integrity_t> callback_integrity;
-
-    std::unordered_map<driver_t, std::vector<checksum_data_t>> driver_sections_checksums;
-    std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
-    // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
-    std::unordered_map<driver_t, device_stack_t> driver_stacks;
-    // VCPU -> Descriptor
-    std::unordered_map<unsigned int, descriptors_t> descriptors;
-    // VCPU -> MSR_LSTAR
-    std::unordered_map<unsigned int, addr_t> msr_lstar;
-    std::vector<std::unique_ptr<libhook::ManualHook>> manual_hooks;
-    std::vector<std::unique_ptr<libhook::SyscallHook>> syscall_hooks;
+    cb_integrity_t(drakvuf_t drakvuf);
+    void check(drakvuf_t drakvuf, const output_format_t& format);
 };

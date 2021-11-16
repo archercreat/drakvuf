@@ -336,6 +336,8 @@ if PLUGIN_ROOTKITMON
 sources += rootkitmon/rootkitmon.cpp
 sources += rootkitmon/rootkitmon.h
 sources += rootkitmon/private.h
+sources += rootkitmon/callback_integrity.cpp
+sources += rootkitmon/callback_integrity.h
 endif
 
 ###############################################################################

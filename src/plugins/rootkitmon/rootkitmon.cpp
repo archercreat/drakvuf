@@ -831,7 +831,7 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
       done_final_analysis(false), not_supported(false)
 {
     this->callback_integrity = std::make_unique<cb_integrity_t>(drakvuf);
-    
+
     if (drakvuf_get_page_mode(drakvuf) != VMI_PM_IA32E)
     {
         this->guest_ptr_size = 4;

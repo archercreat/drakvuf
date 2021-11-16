@@ -115,14 +115,15 @@ static constexpr uint16_t win_8_1_ver       = 9600;
 
 struct pass_ctx
 {
-    addr_t addr;
+    addr_t cb_va;
     std::string name = "<Unknown>";
+    addr_t base_va = 0;
 
     addr_t name_rva, base_rva, size_rva;
 
-    explicit pass_ctx(drakvuf_t drakvuf, addr_t addr) : addr(addr)
+    explicit pass_ctx(drakvuf_t drakvuf, addr_t cb_va) : cb_va(cb_va)
     {
-        if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "BaseDllName",  &this->name_rva) ||
+        if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "FullDllName",  &this->name_rva) ||
             !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",      &this->base_rva) ||
             !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage",  &this->size_rva))
         {
@@ -167,14 +168,15 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
     auto data = static_cast<pass_ctx*>(ctx);
 
     vmi_lock_guard vmi(drakvuf);
-    addr_t base, size;
+    addr_t base;
+    uint32_t size;
     if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->base_rva, 4, &base) ||
-        VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->size_rva, 4, &size))
+        VMI_SUCCESS != vmi_read_32_va(vmi, ldr_table + data->size_rva, 4, &size))
     {
         throw -1;
     }
 
-    if (data->addr >= base && data->addr < base + size)
+    if (data->cb_va >= base && data->cb_va < base + size)
     {
         unicode_string_t* module_name = drakvuf_read_unicode_va(vmi, ldr_table + data->name_rva, 4);
         if (module_name && module_name->contents)
@@ -183,14 +185,16 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
             data->name = std::move(str_name);
             vmi_free_unicode_str(module_name);
         }
+
+        data->base_va = base;
     }
 }
 
-static inline std::string get_module_by_addr(drakvuf_t drakvuf, addr_t addr)
+static inline std::pair<std::string, addr_t> get_module_by_addr(drakvuf_t drakvuf, addr_t addr)
 {
     pass_ctx ctx{ drakvuf, addr };
     drakvuf_enumerate_drivers(drakvuf, driver_visitor, &ctx);
-    return ctx.name;
+    return { ctx.name, ctx.base_va };
 }
 
 cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
@@ -247,10 +251,12 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
             {
                 if (std::find(lhs.begin(), lhs.end(), cb) == lhs.end())
                 {
+                    const auto& [name, base] = get_module_by_addr(drakvuf, cb);
                     fmt::print(format, "rootkitmon", drakvuf, nullptr,
                         keyval("Type", fmt::Qstr("Callback")),
                         keyval("ListName", fmt::Qstr(list_name)),
-                        keyval("Module", fmt::Qstr(get_module_by_addr(drakvuf, cb))),
+                        keyval("Module", fmt::Qstr(name)),
+                        keyval("RVA", fmt::Xval(base ? cb - base : 0)),
                         keyval("Action", fmt::Qstr(action))
                     );
                 }

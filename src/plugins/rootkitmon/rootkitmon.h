@@ -121,7 +121,6 @@ public:
     rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output);
     ~rootkitmon();
 
-    event_response_t callback_hooks_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
     event_response_t final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
 
     std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,

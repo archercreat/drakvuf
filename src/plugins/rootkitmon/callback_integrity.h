@@ -106,18 +106,12 @@
 #include <cstdint>
 #include <array>
 
-#define PRINT_CB(...) \
-    do { \
-            eprint_current_time(); \
-            fprintf (stderr, __VA_ARGS__); \
-    } while (0)
-
 struct cb_integrity_t
 {
     std::vector<addr_t> process_cb;
     std::vector<addr_t> thread_cb;
     std::vector<addr_t> image_cb;
 
-    cb_integrity_t(drakvuf_t drakvuf);
+    explicit cb_integrity_t(drakvuf_t drakvuf);
     void check(drakvuf_t drakvuf, const output_format_t& format);
 };

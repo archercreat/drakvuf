@@ -106,6 +106,7 @@
 #include <libdrakvuf/private.h>
 #include <plugins/plugins_ex.h>
 #include <plugins/output_format.h>
+#include <mutex>
 
 #include "callback_integrity.h"
 
@@ -113,24 +114,33 @@ static constexpr uint16_t win_vista_ver     = 6000;
 static constexpr uint16_t win_vista_sp1_ver = 6001;
 static constexpr uint16_t win_8_1_ver       = 9600;
 
+static std::once_flag once;
+static addr_t name_rva;
+static addr_t base_rva;
+static addr_t size_rva;
+
+namespace
+{
 struct pass_ctx
 {
     addr_t cb_va;
     std::string name = "<Unknown>";
     addr_t base_va = 0;
 
-    addr_t name_rva, base_rva, size_rva;
-
-    explicit pass_ctx(drakvuf_t drakvuf, addr_t cb_va) : cb_va(cb_va)
+    explicit pass_ctx(drakvuf_t drakvuf, addr_t cb_va) : cb_va(cb_va) 
     {
-        if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "FullDllName",  &this->name_rva) ||
-            !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",      &this->base_rva) ||
-            !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage",  &this->size_rva))
+        std::call_once(once, [&]()
         {
-            throw -1;
-        }
+            if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "FullDllName",  &name_rva) ||
+                !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",      &base_rva) ||
+                !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage",  &size_rva))
+            {
+                throw -1;
+            }
+        });
     };
 };
+}
 
 static inline size_t get_process_cb_table_size(uint16_t winver)
 {
@@ -170,19 +180,18 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
     vmi_lock_guard vmi(drakvuf);
     addr_t base;
     uint32_t size;
-    if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->base_rva, 4, &base) ||
-        VMI_SUCCESS != vmi_read_32_va(vmi, ldr_table + data->size_rva, 4, &size))
+    if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + base_rva, 4, &base) ||
+        VMI_SUCCESS != vmi_read_32_va(vmi, ldr_table + size_rva, 4, &size))
     {
         throw -1;
     }
 
     if (data->cb_va >= base && data->cb_va < base + size)
     {
-        unicode_string_t* module_name = drakvuf_read_unicode_va(vmi, ldr_table + data->name_rva, 4);
+        unicode_string_t* module_name = drakvuf_read_unicode_va(vmi, ldr_table + name_rva, 4);
         if (module_name && module_name->contents)
         {
-            std::string str_name{ reinterpret_cast<char*>(module_name->contents) };
-            data->name = std::move(str_name);
+            data->name.assign(reinterpret_cast<char*>(module_name->contents));
             vmi_free_unicode_str(module_name);
         }
 
@@ -208,7 +217,6 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         !drakvuf_get_kernel_symbol_rva(drakvuf, "PspCreateThreadNotifyRoutine", &thread_notify) ||
         !drakvuf_get_kernel_symbol_rva(drakvuf, "PspLoadImageNotifyRoutine", &image_notify))
     {
-        PRINT_CB("[ROOTKITMON::CB] Failed to get kernel cb list rva\n");
         throw -1;
     }
 
@@ -242,14 +250,13 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
 void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
 {
     auto snapshot = std::make_unique<cb_integrity_t>(drakvuf);
-
-    auto check_callbacks = [&](const auto& lhs, const auto& rhs, const auto& list_name)
+    auto check_callbacks = [&](const auto& previous, const auto& current, const auto& list_name)
     {
-        auto walk_list = [&](const auto& lhs, const auto& rhs, const auto& action)
+        auto walk_list = [&](const auto& previous, const auto& current, const auto& action)
         {
-            for (const auto& cb : rhs)
+            for (const auto& cb : current)
             {
-                if (std::find(lhs.begin(), lhs.end(), cb) == lhs.end())
+                if (std::find(previous.begin(), previous.end(), cb) == previous.end())
                 {
                     const auto& [name, base] = get_module_by_addr(drakvuf, cb);
                     fmt::print(format, "rootkitmon", drakvuf, nullptr,
@@ -262,8 +269,8 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
                 }
             }
         };
-        walk_list(lhs, rhs, "Added");
-        walk_list(rhs, lhs, "Removed");
+        walk_list(previous, current, "Added");
+        walk_list(current, previous, "Removed");
     };
 
     check_callbacks(this->process_cb, snapshot->process_cb, "ProcessNotify");

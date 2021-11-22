@@ -302,7 +302,7 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
         {
             for (const auto& cb : current)
             {
-                if (std::find(previous.begin(), previous.end(), cb) != previous.end())
+                if (std::find(previous.begin(), previous.end(), cb) == previous.end())
                 {
                     const auto& [name, base] = get_module_by_addr(drakvuf, cb);
                     fmt::print(format, "rootkitmon", drakvuf, nullptr,

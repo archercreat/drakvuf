@@ -113,6 +113,7 @@
 static constexpr uint16_t win_vista_ver     = 6000;
 static constexpr uint16_t win_vista_sp1_ver = 6001;
 static constexpr uint16_t win_8_1_ver       = 9600;
+static constexpr uint16_t win_10_rs1_ver    = 14393;
 
 static std::once_flag once;
 static addr_t name_rva;
@@ -127,7 +128,7 @@ struct pass_ctx
     std::string name = "<Unknown>";
     addr_t base_va = 0;
 
-    explicit pass_ctx(drakvuf_t drakvuf, addr_t cb_va) : cb_va(cb_va) 
+    explicit pass_ctx(drakvuf_t drakvuf, addr_t cb_va) : cb_va(cb_va)
     {
         std::call_once(once, [&]()
         {
@@ -173,6 +174,16 @@ static inline size_t get_cb_table_size(vmi_instance_t vmi, const std::string& ty
         return get_thread_cb_table_size(winver);
 }
 
+static inline size_t get_power_cb_offset(vmi_instance_t vmi)
+{
+    uint16_t winver = vmi_get_win_buildnumber(vmi);
+
+    if (winver >= win_10_rs1_ver)
+        return vmi_get_address_width(vmi) == 8 ? 0x50 : 0x38;
+    else
+        return vmi_get_address_width(vmi) == 8 ? 0x40 : 0x28;
+}
+
 static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
 {
     auto data = static_cast<pass_ctx*>(ctx);
@@ -212,22 +223,44 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
     const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
     const size_t fast_ref  = (ptrsize == 8 ? 15 : 7);
 
-    addr_t process_notify, thread_notify, image_notify;
-    if (!drakvuf_get_kernel_symbol_rva(drakvuf, "PspCreateProcessNotifyRoutine", &process_notify) ||
-        !drakvuf_get_kernel_symbol_rva(drakvuf, "PspCreateThreadNotifyRoutine", &thread_notify) ||
-        !drakvuf_get_kernel_symbol_rva(drakvuf, "PspLoadImageNotifyRoutine", &image_notify))
-    {
-        throw -1;
-    }
-
     vmi_lock_guard vmi(drakvuf);
-    auto consume_callbacks = [&](const addr_t base, const size_t count) -> std::vector<addr_t>
+    auto get_ksymbol_va = [&](const char* symb) -> addr_t
+    {
+        addr_t rva = 0;
+        if (!drakvuf_get_kernel_symbol_rva(drakvuf, symb, &rva))
+            throw -1;
+        return rva + krnl_base;
+    };
+    // Linked list based callbacks
+    auto consume_callbacks = [&](const char* symb, const size_t cb_off) -> std::vector<addr_t>
     {
         std::vector<addr_t> out;
+        addr_t head = get_ksymbol_va(symb);
+        addr_t entry = 0;
+        // Read flink entry
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, head, 4, &entry))
+            throw -1;
+        while (entry != head && entry)
+        {
+            addr_t callback = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, entry + cb_off, 4, &callback) ||
+                VMI_SUCCESS != vmi_read_addr_va(vmi, entry, 4, &entry))
+                throw -1;
+            if (callback) out.push_back(callback);
+        }
+        return out;
+    };
+
+    // Array based callbacks
+    auto consume_callbacks_ex = [&](const char* symb, const size_t count) -> std::vector<addr_t>
+    {
+        std::vector<addr_t> out;
+        addr_t cb_base = get_ksymbol_va(symb);
+
         for (size_t i = 0; i < count; i++)
         {
             addr_t entry = 0, callback = 0;
-            if (VMI_SUCCESS != vmi_read_addr_va(vmi, base + i * ptrsize, 4, &entry))
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, cb_base + i * ptrsize, 4, &entry))
                 throw -1;
 
             // Strip ref count
@@ -241,10 +274,23 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         }
         return out;
     };
-
-    this->process_cb = consume_callbacks(krnl_base + process_notify, get_cb_table_size(vmi, "process"));
-    this->thread_cb  = consume_callbacks(krnl_base + thread_notify,  get_cb_table_size(vmi, "thread"));
-    this->image_cb   = consume_callbacks(krnl_base + image_notify,   get_cb_table_size(vmi, "image"));
+    this->process_cb   = consume_callbacks_ex("PspCreateProcessNotifyRoutine", get_cb_table_size(vmi, "process"));
+    this->thread_cb    = consume_callbacks_ex("PspCreateThreadNotifyRoutine",  get_cb_table_size(vmi, "thread"));
+    this->image_cb     = consume_callbacks_ex("PspLoadImageNotifyRoutine",     get_cb_table_size(vmi, "image"));
+    this->bugcheck_cb  = consume_callbacks("KeBugCheckCallbackListHead", 2 * ptrsize);
+    this->bcreason_cb  = consume_callbacks("KeBugCheckReasonCallbackListHead", 2 * ptrsize);
+    this->registry_cb  = consume_callbacks("CallbackListHead", 5 * ptrsize);
+    this->logon_cb     = consume_callbacks("SeFileSystemNotifyRoutinesHead", 1 * ptrsize);
+    this->power_cb     = consume_callbacks("PopRegisteredPowerSettingCallbacks", get_power_cb_offset(vmi));
+    this->dbgprint_cb  = consume_callbacks("RtlpDebugPrintCallbackList", -2 * ptrsize);
+    this->fschange_cb  = consume_callbacks("IopFsNotifyChangeQueueHead", 3 * ptrsize);
+    this->drvreinit_cb = consume_callbacks("IopDriverReinitializeQueueHead", 3 * ptrsize);
+    this->drvreinit2_cb= consume_callbacks("IopBootDriverReinitializeQueueHead", 3 * ptrsize);
+    this->nmi_cb       = consume_callbacks("KiNmiCallbackListHead", 1 * ptrsize);
+    this->priority_cb  = consume_callbacks_ex("IopUpdatePriorityCallbackRoutine", 8);
+    this->pnp_prof_cb  = consume_callbacks("PnpProfileNotifyList", 4 * ptrsize);
+    this->pnp_class_cb = consume_callbacks("PnpDeviceClassNotifyList", 5 * ptrsize);
+    this->emp_cb       = consume_callbacks("EmpCallbackListHead", -3 * ptrsize);
 }
 
 void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
@@ -256,7 +302,7 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
         {
             for (const auto& cb : current)
             {
-                if (std::find(previous.begin(), previous.end(), cb) == previous.end())
+                if (std::find(previous.begin(), previous.end(), cb) != previous.end())
                 {
                     const auto& [name, base] = get_module_by_addr(drakvuf, cb);
                     fmt::print(format, "rootkitmon", drakvuf, nullptr,
@@ -273,7 +319,21 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
         walk_list(current, previous, "Removed");
     };
 
-    check_callbacks(this->process_cb, snapshot->process_cb, "ProcessNotify");
-    check_callbacks(this->thread_cb,  snapshot->thread_cb,  "ThreadNotify");
-    check_callbacks(this->image_cb,   snapshot->image_cb,   "ImageNotify");
+    check_callbacks(this->process_cb,   snapshot->process_cb,    "ProcessNotify");
+    check_callbacks(this->thread_cb,    snapshot->thread_cb,     "ThreadNotify");
+    check_callbacks(this->image_cb,     snapshot->image_cb,      "ImageNotify");
+    check_callbacks(this->bugcheck_cb,  snapshot->bugcheck_cb,   "BugCheck");
+    check_callbacks(this->bcreason_cb,  snapshot->bcreason_cb,   "BugCheckReason");
+    check_callbacks(this->registry_cb,  snapshot->registry_cb,   "Registry");
+    check_callbacks(this->logon_cb,     snapshot->logon_cb,      "LogonSession");
+    check_callbacks(this->power_cb,     snapshot->power_cb,      "PowerSettings");
+    check_callbacks(this->dbgprint_cb,  snapshot->dbgprint_cb,   "DbgPrint");
+    check_callbacks(this->fschange_cb,  snapshot->fschange_cb,   "FsChange");
+    check_callbacks(this->drvreinit_cb, snapshot->drvreinit_cb,  "DriverReinit");
+    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb, "DriverReinitBoot");
+    check_callbacks(this->nmi_cb,       snapshot->nmi_cb,        "NMI");
+    check_callbacks(this->priority_cb,  snapshot->priority_cb,   "UpdatePriority");
+    check_callbacks(this->pnp_prof_cb,  snapshot->pnp_prof_cb,   "PnPProfile");
+    check_callbacks(this->pnp_class_cb, snapshot->pnp_class_cb,  "PnPClass");
+    check_callbacks(this->emp_cb,       snapshot->emp_cb,        "EMP");
 }

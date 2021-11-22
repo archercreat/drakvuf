@@ -104,13 +104,96 @@
 #pragma once
 #include <vector>
 #include <cstdint>
-#include <array>
+
+/*
+process, thread, image:
+typedef struct _EX_CALLBACK_ROUTINE_BLOCK {
+    EX_RUNDOWN_REF RundownProtect;
+    PEX_CALLBACK_FUNCTION Function;
+    PVOID Context;
+} EX_CALLBACK_ROUTINE_BLOCK, *PEX_CALLBACK_ROUTINE_BLOCK;
+
+bugcheck:
+typedef struct _KBUGCHECK_CALLBACK_RECORD {
+    LIST_ENTRY Entry;
+    PKBUGCHECK_CALLBACK_ROUTINE CallbackRoutine;
+    __field_bcount_opt(Length) PVOID Buffer;
+    ULONG Length;
+    PUCHAR Component;
+    ULONG_PTR Checksum;
+    UCHAR State;
+} KBUGCHECK_CALLBACK_RECORD, *PKBUGCHECK_CALLBACK_RECORD;
+
+bugcheckreason:
+typedef struct _KBUGCHECK_REASON_CALLBACK_RECORD {
+    LIST_ENTRY Entry;
+    PKBUGCHECK_REASON_CALLBACK_ROUTINE CallbackRoutine;
+    PUCHAR Component;
+    ULONG_PTR Checksum;
+    KBUGCHECK_CALLBACK_REASON Reason;
+    UCHAR State;
+} KBUGCHECK_REASON_CALLBACK_RECORD, *PKBUGCHECK_REASON_CALLBACK_RECORD;
+
+registry:
+typedef struct _CM_CALLBACK_CONTEXT_BLOCK {
+    LIST_ENTRY CallbackListEntry;
+    LONG PreCallListCount;
+    LARGE_INTEGER Cookie;
+    PVOID CallerContext;
+    PEX_CALLBACK_FUNCTION Function;
+    UNICODE_STRING Altitude;
+    LIST_ENTRY ObjectContextListHead;
+} CM_CALLBACK_CONTEXT_BLOCK, *PCM_CALLBACK_CONTEXT_BLOCK;
+
+fschange:
+typedef struct _NOTIFICATION_PACKET {
+    LIST_ENTRY ListEntry;
+    PDRIVER_OBJECT DriverObject;
+    PDRIVER_FS_NOTIFICATION NotificationRoutine;
+} NOTIFICATION_PACKET, *PNOTIFICATION_PACKET;
+
+drvreinit, drvreinit2:
+typedef struct _REINIT_PACKET {
+    LIST_ENTRY ListEntry;
+    PDRIVER_OBJECT DriverObject;
+    PDRIVER_REINITIALIZE DriverReinitializationRoutine;
+    PVOID Context;
+} REINIT_PACKET, *PREINIT_PACKET;
+
+NMI:
+typedef struct _NMI_CALLBACK_BLOCK {
+    _NMI_CALLBACK_BLOCK* Next;
+    NMI_CALLBACK* CallbackRoutine;
+    PVOID Context;
+    _NMI_CALLBACK_BLOCK* Prev;
+};
+
+logon:
+typedef struct _SEP_LOGON_SESSION_TERMINATED_NOTIFICATION {
+    struct _SEP_LOGON_SESSION_TERMINATED_NOTIFICATION *Next;
+    PSE_LOGON_SESSION_TERMINATED_ROUTINE CallbackRoutine;
+} SEP_LOGON_SESSION_TERMINATED_NOTIFICATION, *PSEP_LOGON_SESSION_TERMINATED_NOTIFICATION;
+*/
 
 struct cb_integrity_t
 {
     std::vector<addr_t> process_cb;
     std::vector<addr_t> thread_cb;
     std::vector<addr_t> image_cb;
+    std::vector<addr_t> bugcheck_cb;
+    std::vector<addr_t> bcreason_cb;
+    std::vector<addr_t> registry_cb;
+    std::vector<addr_t> logon_cb;
+    std::vector<addr_t> power_cb;
+    std::vector<addr_t> dbgprint_cb;
+    std::vector<addr_t> fschange_cb;
+    std::vector<addr_t> drvreinit_cb;
+    std::vector<addr_t> drvreinit2_cb;
+    std::vector<addr_t> nmi_cb;
+    std::vector<addr_t> priority_cb;
+    std::vector<addr_t> emp_cb;
+    std::vector<addr_t> pnp_prof_cb;
+    std::vector<addr_t> pnp_class_cb;
 
     explicit cb_integrity_t(drakvuf_t drakvuf);
     void check(drakvuf_t drakvuf, const output_format_t& format);

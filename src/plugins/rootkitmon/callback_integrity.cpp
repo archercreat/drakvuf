@@ -222,6 +222,12 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
     const addr_t krnl_base = drakvuf_get_kernel_base(drakvuf);
     const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
     const size_t fast_ref  = (ptrsize == 8 ? 15 : 7);
+    addr_t drv_obj_rva, mj_array_rva;
+    if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_DEVICE_OBJECT", "DriverObject", &drv_obj_rva) ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_DRIVER_OBJECT", "MajorFunction", &mj_array_rva))
+    {
+        throw -1;
+    }
 
     vmi_lock_guard vmi(drakvuf);
     auto get_ksymbol_va = [&](const char* symb) -> addr_t
@@ -250,7 +256,6 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         }
         return out;
     };
-
     // Array based callbacks
     auto consume_callbacks_ex = [&](const char* symb, const size_t count) -> std::vector<addr_t>
     {
@@ -274,6 +279,19 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         }
         return out;
     };
+    // Extract IRP_MJ_SHUTDOWN from device objects
+    auto extract_cb = [&](std::vector<addr_t> dev_objs) -> std::vector<addr_t>
+    {
+        constexpr size_t irp_mj_shutdown = 0x10;
+        for (auto& dev_obj : dev_objs)
+        {
+            addr_t drv_obj = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, dev_obj + drv_obj_rva, 4, &drv_obj) ||
+                VMI_SUCCESS != vmi_read_addr_va(vmi, drv_obj + mj_array_rva + irp_mj_shutdown * ptrsize, 4, &dev_obj))
+                throw -1;
+        }
+        return dev_objs;
+    };
     this->process_cb   = consume_callbacks_ex("PspCreateProcessNotifyRoutine", get_cb_table_size(vmi, "process"));
     this->thread_cb    = consume_callbacks_ex("PspCreateThreadNotifyRoutine",  get_cb_table_size(vmi, "thread"));
     this->image_cb     = consume_callbacks_ex("PspLoadImageNotifyRoutine",     get_cb_table_size(vmi, "image"));
@@ -282,6 +300,8 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
     this->registry_cb  = consume_callbacks("CallbackListHead", 5 * ptrsize);
     this->logon_cb     = consume_callbacks("SeFileSystemNotifyRoutinesHead", 1 * ptrsize);
     this->power_cb     = consume_callbacks("PopRegisteredPowerSettingCallbacks", get_power_cb_offset(vmi));
+    this->shtdwn_cb    = extract_cb(consume_callbacks("IopNotifyShutdownQueueHead", 2 * ptrsize));
+    this->shtdwn_lst_cb= extract_cb(consume_callbacks("IopNotifyLastChanceShutdownQueueHead", 2 * ptrsize));
     this->dbgprint_cb  = consume_callbacks("RtlpDebugPrintCallbackList", -2 * ptrsize);
     this->fschange_cb  = consume_callbacks("IopFsNotifyChangeQueueHead", 3 * ptrsize);
     this->drvreinit_cb = consume_callbacks("IopDriverReinitializeQueueHead", 3 * ptrsize);
@@ -327,10 +347,12 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
     check_callbacks(this->registry_cb,  snapshot->registry_cb,   "Registry");
     check_callbacks(this->logon_cb,     snapshot->logon_cb,      "LogonSession");
     check_callbacks(this->power_cb,     snapshot->power_cb,      "PowerSettings");
+    check_callbacks(this->shtdwn_cb,    snapshot->shtdwn_cb,     "Shutdown");
+    check_callbacks(this->shtdwn_lst_cb,snapshot->shtdwn_lst_cb, "ShutdownLast");
     check_callbacks(this->dbgprint_cb,  snapshot->dbgprint_cb,   "DbgPrint");
     check_callbacks(this->fschange_cb,  snapshot->fschange_cb,   "FsChange");
     check_callbacks(this->drvreinit_cb, snapshot->drvreinit_cb,  "DriverReinit");
-    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb, "DriverReinitBoot");
+    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb,"DriverReinitBoot");
     check_callbacks(this->nmi_cb,       snapshot->nmi_cb,        "NMI");
     check_callbacks(this->priority_cb,  snapshot->priority_cb,   "UpdatePriority");
     check_callbacks(this->pnp_prof_cb,  snapshot->pnp_prof_cb,   "PnPProfile");

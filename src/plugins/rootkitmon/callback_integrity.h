@@ -185,6 +185,8 @@ struct cb_integrity_t
     std::vector<addr_t> registry_cb;
     std::vector<addr_t> logon_cb;
     std::vector<addr_t> power_cb;
+    std::vector<addr_t> shtdwn_cb;
+    std::vector<addr_t> shtdwn_lst_cb;
     std::vector<addr_t> dbgprint_cb;
     std::vector<addr_t> fschange_cb;
     std::vector<addr_t> drvreinit_cb;

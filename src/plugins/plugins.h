@@ -152,6 +152,7 @@ struct plugins_options
     bool compress_procdumps = false;    // PLUGIN_PROCDUMP
     vmi_pid_t procdump_on_finish;       // PLUGIN_PROCDUMP2
     std::shared_ptr<std::unordered_map<vmi_pid_t, bool>> terminated_processes; // PLUGIN_PROCDUMP
+    const char* hal_profile;            // PLUGIN_PROCDUMP2
     const char* codemon_dump_dir;       // PLUGIN_CODEMON
     const char* codemon_filter_executable;  // PLUGIN_CODEMON
     bool codemon_log_everything;        // PLUGIN_CODEMON
@@ -288,19 +289,31 @@ class plugin
 public:
     virtual ~plugin() = default;
 
-    virtual bool stop()
+    bool stop()
     {
+        if (is_stopped())
+            return true;
+        m_is_stopped = stop_impl();
         m_is_stopping = true;
-        return true;
+        return m_is_stopped;
     }
 
-    virtual bool is_stopping()
+    bool is_stopping() const
     {
         return m_is_stopping;
     }
 
+    bool is_stopped() const
+    {
+        return m_is_stopped;
+    }
+
 protected:
+    virtual bool stop_impl() = 0;
+
+private:
     bool m_is_stopping = false;
+    bool m_is_stopped = false;
 };
 
 class drakvuf_plugins
@@ -315,7 +328,6 @@ public:
     drakvuf_plugins(drakvuf_t drakvuf, output_format_t output, os_t os);
     int start(drakvuf_plugin_t plugin, const plugins_options* config);
     int stop(drakvuf_plugin_t plugin);
-    bool is_stopped(drakvuf_plugin_t plugin);
 };
 
 /***************************************************************************/

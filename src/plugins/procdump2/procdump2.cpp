@@ -178,6 +178,8 @@ procdump2::procdump2(drakvuf_t drakvuf, const procdump2_config* config,
         }
 
         this->current_irql_va = hal_base + func_rva;
+
+        json_object_put(hal_profile);
     }
     else
     {
@@ -211,9 +213,8 @@ procdump2::~procdump2()
 {
 }
 
-bool procdump2::stop()
+bool procdump2::stop_impl()
 {
-    m_is_stopping = true;
     if (procdump_on_finish &&
         !is_active_process(procdump_on_finish) &&
         !is_process_handled(procdump_on_finish))
@@ -251,12 +252,7 @@ bool procdump2::stop()
         procdump_on_finish = 0;
     }
 
-    if (!is_plugin_active())
-    {
-        destroy_all_traps();
-        return true;
-    }
-    return false;
+    return !is_plugin_active() && pluginex::stop_impl();
 }
 
 /*****************************************************************************

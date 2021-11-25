@@ -108,5 +108,7 @@
 #include "win_utils.h"
 
 int patch_payload(injector_t injector, unsigned char* addr);
+bool write_binary_to_memory(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+bool trap_process_notify_routines(drakvuf_t drakvuf, injector_t injector);
 
 #endif

@@ -1,4 +1,4 @@
-/*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
+/*********************IMPORTANT DRAKVUF LICENSE TERMS**********************
  *                                                                         *
  * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
@@ -100,23 +100,76 @@
  * DRAKVUF, and also available from                                        *
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
- ***************************************************************************/
+***************************************************************************/
 
-enum offset
-{
-    EPROCESS_ACTIVEPROCESSLINKS,
-    LIST_ENTRY_BLINK,
-    LIST_ENTRY_FLINK,
-    LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS,
-    LDR_DATA_TABLE_ENTRY_BASEDLLNAME,
-    __OFFSET_MAX
-};
+#include "win_shellexec.h"
+#include <win/win_functions.h>
+#include <win/method_helpers.h>
 
-static const char* offset_names[__OFFSET_MAX][2] =
+static event_response_t cleanup(injector_t injector, drakvuf_trap_info_t* info);
+
+event_response_t handle_shellexec(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
-    [EPROCESS_ACTIVEPROCESSLINKS] = {"_EPROCESS", "ActiveProcessLinks"},
-    [LIST_ENTRY_BLINK] = {"_LIST_ENTRY", "Blink"},
-    [LIST_ENTRY_FLINK] = {"_LIST_ENTRY", "Flink"},
-    [LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] = {"_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks"},
-    [LDR_DATA_TABLE_ENTRY_BASEDLLNAME] = {"_LDR_DATA_TABLE_ENTRY", "BaseDllName"},
-};
+    injector_t injector = info->trap->data;
+    event_response_t event;
+
+    switch (injector->step)
+    {
+        case STEP1:
+        {
+            // save registers
+            PRINT_DEBUG("Saving registers\n");
+            memcpy(&injector->x86_saved_regs, info->regs, sizeof(x86_registers_t));
+
+            if (!setup_shell_execute_stack(injector, info->regs))
+            {
+                fprintf(stderr, "Failed to setup shellexec stack\n");
+                return cleanup(injector, info);
+            }
+
+            info->regs->rip = injector->exec_func;
+            event = VMI_EVENT_RESPONSE_SET_REGISTERS;
+            break;
+        }
+        case STEP2:
+        {
+            // For some reason ShellExecute could return ERROR_FILE_NOT_FOUND(6) while
+            // successfully opening file.
+            if (info->regs->rax != 6 && is_fun_error(drakvuf, info, "ShellExecute failed"))
+                return cleanup(injector, info);
+
+            PRINT_DEBUG("ShellExecute successful\n");
+
+            injector->rc = INJECTOR_SUCCEEDED;
+            memcpy(info->regs, &injector->x86_saved_regs, sizeof(x86_registers_t));
+
+            event = VMI_EVENT_RESPONSE_SET_REGISTERS;
+            break;
+        }
+        case STEP3:
+        {
+            drakvuf_remove_trap(drakvuf, info->trap, NULL);
+            drakvuf_interrupt(drakvuf, SIGDRAKVUFERROR);
+            event = VMI_EVENT_RESPONSE_NONE;
+            break;
+        }
+        default:
+        {
+            PRINT_DEBUG("Should not be here\n");
+            assert(false);
+        }
+    }
+
+    return event;
+}
+
+static event_response_t cleanup(injector_t injector, drakvuf_trap_info_t* info)
+{
+    fprintf(stderr, "Exiting prematurely\n");
+
+    if (injector->rc == INJECTOR_SUCCEEDED)
+        injector->rc = INJECTOR_FAILED;
+
+    memcpy(info->regs, &injector->x86_saved_regs, sizeof(x86_registers_t));
+    return override_step(injector, STEP3, VMI_EVENT_RESPONSE_SET_REGISTERS);
+}

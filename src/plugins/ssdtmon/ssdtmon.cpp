@@ -186,13 +186,17 @@ event_response_t write_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
             keyval("Table", fmt::Qstr("SSDT"))
         );
     }
-    else if (info->trap_pa > s->w32pservicetable - 8 && info->trap_pa <= s->w32pservicetable + sizeof(uint32_t) * s->w32pservicelimit + sizeof(uint32_t) - 1 )
+    for (size_t i = 0; i < s->w32p_ssdt.size(); i++)
     {
-        int64_t table_index = (info->trap_pa - s->w32pservicetable) / sizeof(uint32_t);
-        fmt::print(s->format, "ssdtmon", drakvuf, info,
-            keyval("TableIndex", fmt::Nval(table_index)),
-            keyval("Table", fmt::Qstr("SSDTShadow"))
-        );
+        const auto& [base, size] = s->w32p_ssdt[i];
+        if (info->trap_pa >= base && info->trap_pa < base + size)
+        {
+            int64_t table_index = (info->trap_pa - base + i * VMI_PS_4KB) / sizeof(uint32_t);
+            fmt::print(s->format, "ssdtmon", drakvuf, info,
+                keyval("TableIndex", fmt::Nval(table_index)),
+                keyval("Table", fmt::Qstr("SSDTShadow"))
+            );
+        }
     }
     return 0;
 }
@@ -241,6 +245,34 @@ static bool get_driver_base(vmi_instance_t vmi, ssdtmon* plugin, const char* dri
     } while (entry != list_head);
 
     return false;
+}
+
+std::unique_ptr<libhook::ManualHook> ssdtmon::register_mem_hook(hook_cb_t callback, addr_t pa)
+{
+    auto trap = new drakvuf_trap_t
+    {
+        .type = MEMACCESS,
+        .memaccess.gfn = pa >> 12,
+            .memaccess.type = PRE,
+            .memaccess.access = VMI_MEMACCESS_W,
+            .data = (void*)this,
+            .name = nullptr,
+            .ttl = UNLIMITED_TTL,
+            .ah_cb = nullptr,
+            .cb = callback,
+    };
+
+    auto hook = createManualHook(trap, [](drakvuf_trap_t* trap_)
+    {
+        delete trap_;
+    });
+    if (!hook)
+    {
+        PRINT_DEBUG("[SSDTMON] Failed to hook 0x%lx\n", pa >> 12);
+        throw -1;
+    }
+
+    return hook;
 }
 
 /* ----------------------------------------------------- */
@@ -305,42 +337,40 @@ ssdtmon::ssdtmon(drakvuf_t drakvuf, const ssdtmon_config* config, output_format_
                 throw -1;
             }
             // Read ssdt shadow size
-            if (VMI_SUCCESS != vmi_read_32_va(vmi, w32k_base + w32psl_rva, gui_pid, &this->w32pservicelimit))
+            uint32_t w32pservicelimit;
+            if (VMI_SUCCESS != vmi_read_32_va(vmi, w32k_base + w32psl_rva, gui_pid, &w32pservicelimit))
             {
                 PRINT_DEBUG("[SSDTMON] Failed to read W32pServiceLimit\n");
                 throw -1;
             }
-            // NOTE: We use vmi_translate_uv2p instead of vmi_translate_kv2p because Win32k.sys mapping is not present
-            // in system process, only in process with GUI dependencies, hence we use explorer.exe as a pid.
-            if (VMI_SUCCESS != vmi_translate_uv2p(vmi, w32k_base + w32pst_rva, gui_pid, &this->w32pservicetable))
+
+            size_t servicetable_len = sizeof(uint32_t) * w32pservicelimit;
+            size_t n_pages = (servicetable_len + VMI_PS_4KB) / VMI_PS_4KB;
+
+            for (size_t page = 0; page != n_pages; ++page)
             {
-                PRINT_DEBUG("[SSDTMON] Failed to translate win32k!W32pServiceTable to physical address\n");
-                throw -1;
+                // NOTE: We use vmi_translate_uv2p instead of vmi_translate_kv2p because Win32k.sys mapping is not present
+                // in system process, only in process with GUI dependencies, hence we use explorer.exe as a pid.
+                addr_t page_addr = w32k_base + w32pst_rva + page * VMI_PS_4KB;
+                size_t page_payload_len = std::min<size_t>(servicetable_len - page * VMI_PS_4KB, VMI_PS_4KB);
+
+                addr_t page_paddr;
+                if (VMI_SUCCESS != vmi_translate_uv2p(vmi, page_addr, gui_pid, &page_paddr))
+                {
+                    PRINT_DEBUG("[SSDTMON] Failed to translate page %zu of win32k!W32pServiceTable to physical address\n", page);
+                    throw -1;
+                }
+
+                this->ssdt_traps.push_back(register_mem_hook(write_cb, page_paddr));
+                this->w32p_ssdt.emplace_back(page_paddr, page_payload_len);
+
+                if (page == 0)
+                {
+                    PRINT_DEBUG("[SSDTMON] SSDT shadow is at 0x%lx. Number of syscalls: %u. Size: %zu\n",
+                        page_paddr, w32pservicelimit, servicetable_len);
+                }
             }
         }
-
-        PRINT_DEBUG("[SSDTMON] SSDT shadow is at 0x%lx. Number of syscalls: %u. Size: %lu\n",
-            this->w32pservicetable,
-            this->w32pservicelimit,
-            sizeof(uint32_t)*this->w32pservicelimit);
-
-        this->ssdt_trap[0].memaccess.gfn = this->w32pservicetable >> 12;
-        this->ssdt_trap[0].cb = write_cb;
-
-        if (!drakvuf_add_trap(drakvuf, &this->ssdt_trap[0]))
-            throw -1;
-
-        addr_t ssdt_shadow_write_end = (this->w32pservicetable + sizeof(uint32_t) * this->w32pservicelimit) >> 12;
-
-        if ( ssdt_shadow_write_end != this->ssdt_trap[0].memaccess.gfn )
-        {
-            this->ssdt_trap[1].cb = write_cb;
-            this->ssdt_trap[1].memaccess.gfn = ssdt_shadow_write_end;
-
-            if (!drakvuf_add_trap(drakvuf, &this->ssdt_trap[1]))
-                throw -1;
-        }
-
         json_object_put(profile_json);
     }
 
@@ -384,25 +414,7 @@ ssdtmon::ssdtmon(drakvuf_t drakvuf, const ssdtmon_config* config, output_format_
         this->kiservicelimit,
         sizeof(uint32_t)*this->kiservicelimit);
 
-    this->ssdt_trap[2].cb = write_cb;
-    this->ssdt_trap[2].memaccess.gfn = this->kiservicetable >> 12;
-
-    addr_t ssdtwrite_end = (this->kiservicetable + sizeof(uint32_t) * this->kiservicelimit) >> 12;
-
-    if ( !drakvuf_add_trap(drakvuf, &this->ssdt_trap[2]) )
-    {
-        PRINT_DEBUG("SSDT plugin failed to trap on \n");
-        throw -1;
-    }
-
-    if ( ssdtwrite_end != this->ssdt_trap[2].memaccess.gfn )
-    {
-        this->ssdt_trap[3].cb = write_cb;
-        this->ssdt_trap[3].memaccess.gfn = ssdtwrite_end;
-
-        if ( !drakvuf_add_trap(drakvuf, &this->ssdt_trap[3]) )
-            throw -1;
-    }
+    this->ssdt_traps.push_back(register_mem_hook(write_cb, kiservicetable));
 
     addr_t sdt_rva, sdt_shadow_rva;
 
@@ -423,11 +435,10 @@ ssdtmon::ssdtmon(drakvuf_t drakvuf, const ssdtmon_config* config, output_format_
     this->sdt_shadow_crc = ssdtmon_sha256_calc(vmi, this->sdt_shadow_va, is64 ? 64 : 32);
 }
 
-bool ssdtmon::stop()
+bool ssdtmon::stop_impl()
 {
     if (!is_stopping())
     {
-        m_is_stopping = true;
         bool is64 = (drakvuf_get_page_mode(drakvuf) == VMI_PM_IA32E);
         vmi_lock_guard vmi(drakvuf);
         if (sdt_crc != ssdtmon_sha256_calc(vmi, sdt_va, is64 ? 32 : 16))
@@ -439,7 +450,7 @@ bool ssdtmon::stop()
             fmt::print(format, "ssdtmon", drakvuf, nullptr, keyval("Table", fmt::Qstr("SDTShadow")));
         }
     }
-    return true;
+    return pluginex::stop_impl();
 }
 
 ssdtmon::~ssdtmon()

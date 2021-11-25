@@ -115,6 +115,9 @@ struct ssdtmon_config
 
 class ssdtmon: public pluginex
 {
+private:
+    std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa);
+
 public:
     output_format_t format;
 
@@ -123,29 +126,16 @@ public:
     addr_t kiservicetable;
     uint32_t kiservicelimit;
 
-    addr_t w32pservicetable;
-    uint32_t w32pservicelimit;
+    std::vector<std::pair<addr_t, addr_t>> w32p_ssdt;
 
     addr_t sdt_va, sdt_shadow_va;
     std::array<uint8_t, 32> sdt_crc, sdt_shadow_crc;
 
-    drakvuf_trap_t ssdt_trap[4] =
-    {
-        [0 ... 3] = {
-            .cb = nullptr,
-            .data = (void*)this,
-            .name = nullptr,
-            .ah_cb = nullptr,
-            .ttl = UNLIMITED_TTL,
-            .type = MEMACCESS,
-            .memaccess.type = PRE,
-            .memaccess.access = VMI_MEMACCESS_W
-        }
-    };
+    std::vector<std::unique_ptr<libhook::ManualHook>> ssdt_traps;
 
     ssdtmon(drakvuf_t drakvuf, const ssdtmon_config* config, output_format_t output);
     ~ssdtmon();
-    bool stop() override;
+    virtual bool stop_impl() override;
 };
 
 #endif

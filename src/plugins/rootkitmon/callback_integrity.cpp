@@ -238,7 +238,7 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         return rva + krnl_base;
     };
     // Linked list based callbacks
-    auto consume_callbacks = [&](const char* symb, const size_t cb_off) -> std::vector<addr_t>
+    auto consume_callbacks = [&](const char* symb, const int64_t cb_off) -> std::vector<addr_t>
     {
         std::vector<addr_t> out;
         addr_t head = get_ksymbol_va(symb);

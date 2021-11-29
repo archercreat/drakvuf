@@ -196,6 +196,7 @@ struct cb_integrity_t
     std::vector<addr_t> emp_cb;
     std::vector<addr_t> pnp_prof_cb;
     std::vector<addr_t> pnp_class_cb;
+    std::vector<addr_t> w32callouts;
 
     explicit cb_integrity_t(drakvuf_t drakvuf);
     void check(drakvuf_t drakvuf, const output_format_t& format);

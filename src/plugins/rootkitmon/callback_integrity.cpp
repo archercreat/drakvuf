@@ -120,6 +120,28 @@ static addr_t name_rva;
 static addr_t base_rva;
 static addr_t size_rva;
 
+static const std::vector<const char*> callout_syms =
+{
+    "PspW32ProcessCallout",
+    "PspW32ThreadCallout",
+    "ExGlobalAtomTableCallout",
+    "KeGdiFlushUserBatch",
+    "PopEventCallout",
+    "PopStateCallout",
+    "PopWin32InfoCallout",
+    "PspW32JobCallout",
+    "ExDesktopOpenProcedureCallout",
+    "ExDesktopOkToCloseProcedureCallout",
+    "ExDesktopCloseProcedureCallout",
+    "ExDesktopDeleteProcedureCallout",
+    "ExWindowStationOkToCloseProcedureCallout",
+    "ExWindowStationCloseProcedureCallout",
+    "ExWindowStationDeleteProcedureCallout",
+    "ExWindowStationParseProcedureCallout",
+    "ExWindowStationOpenProcedureCallout",
+    "ExLicensingWin32Callout"
+};
+
 namespace
 {
 struct pass_ctx
@@ -311,32 +333,79 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
     this->pnp_prof_cb  = consume_callbacks("PnpProfileNotifyList", 4 * ptrsize);
     this->pnp_class_cb = consume_callbacks("PnpDeviceClassNotifyList", 5 * ptrsize);
     this->emp_cb       = consume_callbacks("EmpCallbackListHead", -3 * ptrsize);
+
+    if (vmi_get_win_buildnumber(vmi) < win_8_1_ver)
+    {
+        for (const auto& sym : callout_syms)
+        {
+            addr_t fn = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va(sym), 4, &fn))
+                throw -1;
+            this->w32callouts.push_back(fn);
+        }
+    }
+    else
+    {
+        addr_t cb_block, fn;
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va("PsWin32CallBack"), 4, &cb_block))
+            throw -1;
+        // Strip ref count
+        cb_block &= ~fast_ref;
+
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, cb_block + ptrsize, 4, &fn))
+            throw -1;
+        this->w32callouts.push_back(fn);
+    }
 }
 
 void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
 {
     auto snapshot = std::make_unique<cb_integrity_t>(drakvuf);
+
+    auto report = [&](const auto& list_name, const auto& addr, const auto& action)
+    {
+        const auto& [name, base] = get_module_by_addr(drakvuf, addr);
+        fmt::print(format, "rootkitmon", drakvuf, nullptr,
+            keyval("Type", fmt::Qstr("Callback")),
+            keyval("ListName", fmt::Qstr(list_name)),
+            keyval("Module", fmt::Qstr(name)),
+            keyval("RVA", fmt::Xval(base ? addr - base : 0)),
+            keyval("Action", fmt::Qstr(action))
+        );
+    };
+
     auto check_callbacks = [&](const auto& previous, const auto& current, const auto& list_name)
     {
         auto walk_list = [&](const auto& previous, const auto& current, const auto& action)
         {
             for (const auto& cb : current)
-            {
                 if (std::find(previous.begin(), previous.end(), cb) == previous.end())
-                {
-                    const auto& [name, base] = get_module_by_addr(drakvuf, cb);
-                    fmt::print(format, "rootkitmon", drakvuf, nullptr,
-                        keyval("Type", fmt::Qstr("Callback")),
-                        keyval("ListName", fmt::Qstr(list_name)),
-                        keyval("Module", fmt::Qstr(name)),
-                        keyval("RVA", fmt::Xval(base ? cb - base : 0)),
-                        keyval("Action", fmt::Qstr(action))
-                    );
-                }
-            }
+                    report(list_name, cb, action);
         };
         walk_list(previous, current, "Added");
         walk_list(current, previous, "Removed");
+    };
+
+    auto check_callouts = [&](const auto& previous, const auto& current)
+    {
+
+        uint16_t winver;
+        {
+            vmi_lock_guard vmi(drakvuf);
+            winver = vmi_get_win_buildnumber(vmi);
+        }
+
+        if (winver < win_8_1_ver)
+        {
+            for (size_t i = 0; i < callout_syms.size(); i++)
+                if (previous[i] != current[i])
+                    report(callout_syms[i], current[i], "Replaced");
+        }
+        else
+        {
+            if (previous[0] != current[0])
+                report("PsWin32CallBack", current[0], "Replaced");
+        }
     };
 
     check_callbacks(this->process_cb,   snapshot->process_cb,    "ProcessNotify");
@@ -348,14 +417,15 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
     check_callbacks(this->logon_cb,     snapshot->logon_cb,      "LogonSession");
     check_callbacks(this->power_cb,     snapshot->power_cb,      "PowerSettings");
     check_callbacks(this->shtdwn_cb,    snapshot->shtdwn_cb,     "Shutdown");
-    check_callbacks(this->shtdwn_lst_cb,snapshot->shtdwn_lst_cb, "ShutdownLast");
+    check_callbacks(this->shtdwn_lst_cb, snapshot->shtdwn_lst_cb, "ShutdownLast");
     check_callbacks(this->dbgprint_cb,  snapshot->dbgprint_cb,   "DbgPrint");
     check_callbacks(this->fschange_cb,  snapshot->fschange_cb,   "FsChange");
     check_callbacks(this->drvreinit_cb, snapshot->drvreinit_cb,  "DriverReinit");
-    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb,"DriverReinitBoot");
+    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb, "DriverReinitBoot");
     check_callbacks(this->nmi_cb,       snapshot->nmi_cb,        "NMI");
     check_callbacks(this->priority_cb,  snapshot->priority_cb,   "UpdatePriority");
     check_callbacks(this->pnp_prof_cb,  snapshot->pnp_prof_cb,   "PnPProfile");
     check_callbacks(this->pnp_class_cb, snapshot->pnp_class_cb,  "PnPClass");
     check_callbacks(this->emp_cb,       snapshot->emp_cb,        "EMP");
+    check_callouts (this->w32callouts,  snapshot->w32callouts);
 }

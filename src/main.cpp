@@ -294,6 +294,8 @@ static void print_usage()
         "\t                           Where to store processes dumps\n"
         "\t --compress-procdumps\n"
         "\t                           Controls compression of processes dumps on disk\n"
+        "\t --json-hal <path to json>\n"
+        "\t                           The JSON profile for hal.dll\n"
 #endif
 #ifdef ENABLE_PLUGIN_PROCDUMP2
         "\t --procdump-disable-dump-on-finish\n"
@@ -366,7 +368,8 @@ int main(int argc, char** argv)
     uint32_t injection_thread = 0;
     output_format_t output = OUTPUT_DEFAULT;
     bool plugin_list[] = {[0 ... __DRAKVUF_PLUGIN_LIST_MAX-1] = 1};
-    int wait_stop_plugins = 0;
+    bool wait_stop_plugins = false;
+    int wait_stop_plugins_timeout = 0;
     bool verbose = false;
     bool leave_paused = false;
     bool libvmi_conf = false;
@@ -448,6 +451,7 @@ int main(int argc, char** argv)
         opt_hidsim_random_clicks,
         opt_rootkitmon_json_fwpkclnt,
         opt_rootkitmon_json_fltmgr,
+        opt_json_hal
     };
     const option long_opts[] =
     {
@@ -511,6 +515,7 @@ int main(int argc, char** argv)
         {"hid-random-clicks", no_argument, NULL, opt_hidsim_random_clicks},
         {"json-fwpkclnt", required_argument, NULL, opt_rootkitmon_json_fwpkclnt},
         {"json-fltmgr", required_argument, NULL, opt_rootkitmon_json_fltmgr},
+        {"json-hal", required_argument, NULL, opt_json_hal},
         {NULL, 0, NULL, 0}
     };
     const char* opts = "r:d:i:I:e:m:t:D:o:vx:a:f:spT:S:Mc:nblgj:k:w:W:hF:C";
@@ -623,7 +628,8 @@ int main(int argc, char** argv)
                 }
                 break;
             case opt_wait_stop_plugins:
-                wait_stop_plugins = atoi(optarg);
+                wait_stop_plugins = true;
+                wait_stop_plugins_timeout = atoi(optarg);
                 break;
             case 'a':
                 if (!enable_plugin(optarg, plugin_list, &disabled_all))
@@ -761,6 +767,9 @@ int main(int argc, char** argv)
                 break;
             case opt_compress_procdumps:
                 options.compress_procdumps = true;
+                break;
+            case opt_json_hal:
+                options.hal_profile = optarg;
                 break;
 #endif
 #ifdef ENABLE_PLUGIN_PROCDUMP2
@@ -965,16 +974,10 @@ int main(int argc, char** argv)
     else if (rc > 0)
         plugins_pending = true;
 
-    PRINT_DEBUG("Finished stop plugins\n");
-
     if (plugins_pending && wait_stop_plugins)
-    {
-        PRINT_DEBUG("Beginning wait stop plugins\n");
+        drakvuf->plugin_stop_loop(wait_stop_plugins_timeout, plugin_list);
 
-        drakvuf->plugin_stop_loop(wait_stop_plugins, plugin_list);
-
-        PRINT_DEBUG("Finished wait stop plugins\n");
-    }
+    PRINT_DEBUG("Finished stop plugins\n");
 
     if (terminate && injected_pid)
         drakvuf->terminate(injection_pid, injection_thread, injected_pid, termination_timeout, terminated_processes);

@@ -391,7 +391,8 @@ int drakvuf_plugins::start(const drakvuf_plugin_t plugin_id,
                         .procdump_dir = options->procdump_dir,
                         .compress_procdumps = options->compress_procdumps,
                         .procdump_on_finish = options->procdump_on_finish,
-                        .terminated_processes = options->terminated_processes
+                        .terminated_processes = options->terminated_processes,
+                        .hal_profile = options->hal_profile
                     };
                     this->plugins[plugin_id] =
                         std::make_unique<procdump2>(this->drakvuf, &config, this->output);
@@ -512,10 +513,13 @@ int drakvuf_plugins::stop(const drakvuf_plugin_t plugin_id)
     if ( __DRAKVUF_PLUGIN_LIST_MAX != 0 &&
         plugin_id < __DRAKVUF_PLUGIN_LIST_MAX )
     {
-        PRINT_DEBUG("Stopping plugin %s\n", drakvuf_plugin_names[plugin_id]);
-
         if ( !this->plugins[plugin_id] || !drakvuf_plugin_os_support[plugin_id][this->os] )
             return 0;
+
+        if (this->plugins[plugin_id]->is_stopped())
+            return 0;
+
+        PRINT_DEBUG("Stopping plugin %s\n", drakvuf_plugin_names[plugin_id]);
 
         bool is_stopped = false;
 

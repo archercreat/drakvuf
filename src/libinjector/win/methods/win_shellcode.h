@@ -1,4 +1,4 @@
-/*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
+/*********************IMPORTANT DRAKVUF LICENSE TERMS**********************
  *                                                                         *
  * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
@@ -100,23 +100,12 @@
  * DRAKVUF, and also available from                                        *
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
- ***************************************************************************/
+***************************************************************************/
 
-enum offset
-{
-    EPROCESS_ACTIVEPROCESSLINKS,
-    LIST_ENTRY_BLINK,
-    LIST_ENTRY_FLINK,
-    LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS,
-    LDR_DATA_TABLE_ENTRY_BASEDLLNAME,
-    __OFFSET_MAX
-};
+#ifndef WIN_METHOD_SHELLCODE
+#define WIN_METHOD_SHELLCODE
 
-static const char* offset_names[__OFFSET_MAX][2] =
-{
-    [EPROCESS_ACTIVEPROCESSLINKS] = {"_EPROCESS", "ActiveProcessLinks"},
-    [LIST_ENTRY_BLINK] = {"_LIST_ENTRY", "Blink"},
-    [LIST_ENTRY_FLINK] = {"_LIST_ENTRY", "Flink"},
-    [LDR_DATA_TABLE_ENTRY_INLOADORDERLINKS] = {"_LDR_DATA_TABLE_ENTRY", "InLoadOrderLinks"},
-    [LDR_DATA_TABLE_ENTRY_BASEDLLNAME] = {"_LDR_DATA_TABLE_ENTRY", "BaseDllName"},
-};
+#include "win_utils.h"
+
+event_response_t handle_win_shellcode(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+#endif

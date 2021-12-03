@@ -108,12 +108,14 @@
 #include <plugins/output_format.h>
 #include <mutex>
 
-#include "callback_integrity.h"
+#include "callbackmon.h"
 
 static constexpr uint16_t win_vista_ver     = 6000;
 static constexpr uint16_t win_vista_sp1_ver = 6001;
+static constexpr uint16_t win_7_sp1_ver     = 7601;
 static constexpr uint16_t win_8_1_ver       = 9600;
 static constexpr uint16_t win_10_rs1_ver    = 14393;
+static constexpr uint16_t win_10_1803_ver   = 17134;
 
 static std::once_flag once;
 static addr_t name_rva;
@@ -140,6 +142,13 @@ static const std::vector<const char*> callout_syms =
     "ExWindowStationParseProcedureCallout",
     "ExWindowStationOpenProcedureCallout",
     "ExLicensingWin32Callout"
+};
+
+// Map of Windows version -> [callout structure size, callout size offset, callout base offset]
+static const std::unordered_map<uint16_t, std::tuple<size_t, size_t, size_t>> wfp_offsets = 
+{
+    { win_7_sp1_ver, { 0x40, 0x548, 0x550 } },
+    { win_10_1803_ver, { 0x50, 0x190, 0x198 } },
 };
 
 namespace
@@ -239,7 +248,8 @@ static inline std::pair<std::string, addr_t> get_module_by_addr(drakvuf_t drakvu
     return { ctx.name, ctx.base_va };
 }
 
-cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
+callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, output_format_t output)
+: pluginex(drakvuf, output), config{ *config }, format{ output }
 {
     const addr_t krnl_base = drakvuf_get_kernel_base(drakvuf);
     const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
@@ -314,6 +324,80 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
         }
         return dev_objs;
     };
+    // Extract PsWin32Callouts
+    auto consume_w32callouts = [&]() -> std::vector<addr_t>
+    {
+        std::vector<addr_t> out;
+        if (vmi_get_win_buildnumber(vmi) < win_8_1_ver)
+        {
+            for (const auto& sym : callout_syms)
+            {
+                addr_t fn = 0;
+                if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va(sym), 4, &fn))
+                    throw -1;
+                out.push_back(fn);
+            }
+        }
+        else
+        {
+            addr_t cb_block, fn;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va("PsWin32CallBack"), 4, &cb_block))
+                throw -1;
+            // Strip ref count
+            cb_block &= ~fast_ref;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, cb_block + ptrsize, 4, &fn))
+                throw -1;
+            out.push_back(fn);
+        }
+        return out;
+    };
+    // Extract Wfp Callouts
+    auto consume_wfpcallouts = [&](const char* profile) -> std::vector<addr_t>
+    {
+        std::vector<addr_t> out;
+        const uint16_t ver = vmi_get_win_buildnumber(vmi);
+        // only Windows 7 sp1 x64 and Windows 10 1803 x64 currently supported
+        if (wfp_offsets.find(ver) == wfp_offsets.end() || !profile)
+            return {};
+        // Get gWfpGlobal RVA
+        auto profile_json = json_object_from_file(profile);
+        if (!profile_json)
+            throw -1;
+
+        addr_t gwfp_rva;
+        json_get_symbol_rva(drakvuf, profile_json, "gWfpGlobal", &gwfp_rva);
+        json_object_put(profile_json);
+
+        addr_t list_head;
+        if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
+            throw -1;
+        addr_t netio_base;
+        if (!drakvuf_get_module_base_addr(drakvuf, list_head, "netio.sys", &netio_base))
+            throw -1;
+        addr_t gwfp;
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, netio_base + gwfp_rva, 4, &gwfp))
+            throw -1;
+
+        const auto& [callout_size, size_off, callout_off] = wfp_offsets.at(ver);
+        addr_t callout_base, callout_count;
+        // Read callout count and callout base address
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, gwfp + size_off, 4, &callout_count) ||
+            VMI_SUCCESS != vmi_read_addr_va(vmi, gwfp + callout_off, 4, &callout_base))
+            throw -1;
+
+        for (addr_t callout = callout_base; callout < callout_base + callout_count * callout_size; callout += callout_size)
+        {
+            addr_t cb1 = 0, cb2 = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, callout + 2 * ptrsize, 4, &cb1) ||
+                VMI_SUCCESS != vmi_read_addr_va(vmi, callout + 2 * ptrsize + ptrsize, 4, &cb2))
+                throw -1;
+
+            if (cb1) out.push_back(cb1);
+            if (cb2) out.push_back(cb2);
+        }
+        return out;
+    };
+
     this->process_cb   = consume_callbacks_ex("PspCreateProcessNotifyRoutine", get_cb_table_size(vmi, "process"));
     this->thread_cb    = consume_callbacks_ex("PspCreateThreadNotifyRoutine",  get_cb_table_size(vmi, "thread"));
     this->image_cb     = consume_callbacks_ex("PspLoadImageNotifyRoutine",     get_cb_table_size(vmi, "image"));
@@ -333,34 +417,13 @@ cb_integrity_t::cb_integrity_t(drakvuf_t drakvuf)
     this->pnp_prof_cb  = consume_callbacks("PnpProfileNotifyList", 4 * ptrsize);
     this->pnp_class_cb = consume_callbacks("PnpDeviceClassNotifyList", 5 * ptrsize);
     this->emp_cb       = consume_callbacks("EmpCallbackListHead", -3 * ptrsize);
-
-    if (vmi_get_win_buildnumber(vmi) < win_8_1_ver)
-    {
-        for (const auto& sym : callout_syms)
-        {
-            addr_t fn = 0;
-            if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va(sym), 4, &fn))
-                throw -1;
-            this->w32callouts.push_back(fn);
-        }
-    }
-    else
-    {
-        addr_t cb_block, fn;
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, get_ksymbol_va("PsWin32CallBack"), 4, &cb_block))
-            throw -1;
-        // Strip ref count
-        cb_block &= ~fast_ref;
-
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, cb_block + ptrsize, 4, &fn))
-            throw -1;
-        this->w32callouts.push_back(fn);
-    }
+    this->w32callouts  = consume_w32callouts();
+    this->wfpcallouts  = consume_wfpcallouts(this->config.netio_profile);
 }
 
-void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
+bool callbackmon::stop_impl()
 {
-    auto snapshot = std::make_unique<cb_integrity_t>(drakvuf);
+    auto snapshot = std::make_unique<callbackmon>(drakvuf, &config, format);
 
     auto report = [&](const auto& list_name, const auto& addr, const auto& action)
     {
@@ -379,7 +442,7 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
         auto walk_list = [&](const auto& previous, const auto& current, const auto& action)
         {
             for (const auto& cb : current)
-                if (std::find(previous.begin(), previous.end(), cb) == previous.end())
+                if (std::find(previous.begin(), previous.end(), cb) != previous.end())
                     report(list_name, cb, action);
         };
         walk_list(previous, current, "Added");
@@ -394,7 +457,6 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
             vmi_lock_guard vmi(drakvuf);
             winver = vmi_get_win_buildnumber(vmi);
         }
-
         if (winver < win_8_1_ver)
         {
             for (size_t i = 0; i < callout_syms.size(); i++)
@@ -427,5 +489,8 @@ void cb_integrity_t::check(drakvuf_t drakvuf, const output_format_t& format)
     check_callbacks(this->pnp_prof_cb,  snapshot->pnp_prof_cb,   "PnPProfile");
     check_callbacks(this->pnp_class_cb, snapshot->pnp_class_cb,  "PnPClass");
     check_callbacks(this->emp_cb,       snapshot->emp_cb,        "EMP");
+    check_callbacks(this->wfpcallouts,  snapshot->wfpcallouts,   "WfpCallouts");
     check_callouts (this->w32callouts,  snapshot->w32callouts);
+
+    return true;
 }

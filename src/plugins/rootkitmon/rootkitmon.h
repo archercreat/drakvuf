@@ -112,9 +112,6 @@ struct rootkitmon_config
     const char* fltmgr_profile;
 };
 
-// forward declaration
-struct cb_integrity_t;
-
 class rootkitmon : public pluginex
 {
 public:
@@ -154,8 +151,6 @@ public:
     addr_t halprivatetable;
     addr_t type_idx_table;
     uint8_t ob_header_cookie;
-
-    std::unique_ptr<cb_integrity_t> callback_integrity;
 
     std::unordered_map<driver_t, std::vector<checksum_data_t>> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;

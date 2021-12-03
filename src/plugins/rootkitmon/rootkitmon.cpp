@@ -108,7 +108,6 @@
 #include "plugins/output_format.h"
 #include "rootkitmon.h"
 #include "private.h"
-#include "callback_integrity.h"
 
 static bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr)
 {
@@ -586,8 +585,6 @@ event_response_t rootkitmon::final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info
         check_driver_objects(drakvuf, info);
         check_descriptors(drakvuf, info);
 
-        this->callback_integrity->check(drakvuf, this->format);
-
         done_final_analysis = true;
     }
     return VMI_EVENT_RESPONSE_NONE;
@@ -830,8 +827,6 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
     : pluginex(drakvuf, output), format(output), offsets(new size_t[__OFFSET_MAX]),
       done_final_analysis(false), not_supported(false)
 {
-    this->callback_integrity = std::make_unique<cb_integrity_t>(drakvuf);
-
     if (drakvuf_get_page_mode(drakvuf) != VMI_PM_IA32E)
     {
         this->guest_ptr_size = 4;

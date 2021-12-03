@@ -102,8 +102,47 @@
  *                                                                         *
  ***************************************************************************/
 #pragma once
-#include <vector>
-#include <cstdint>
+
+#include "plugins/plugins_ex.h"
+#include "private.h"
+
+struct callbackmon_config
+{
+    const char* netio_profile = nullptr;
+};
+
+class callbackmon : public pluginex
+{
+public:
+    callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, output_format_t output);
+
+    const callbackmon_config config;
+    const output_format_t format;
+
+    std::vector<addr_t> process_cb;
+    std::vector<addr_t> thread_cb;
+    std::vector<addr_t> image_cb;
+    std::vector<addr_t> bugcheck_cb;
+    std::vector<addr_t> bcreason_cb;
+    std::vector<addr_t> registry_cb;
+    std::vector<addr_t> logon_cb;
+    std::vector<addr_t> power_cb;
+    std::vector<addr_t> shtdwn_cb;
+    std::vector<addr_t> shtdwn_lst_cb;
+    std::vector<addr_t> dbgprint_cb;
+    std::vector<addr_t> fschange_cb;
+    std::vector<addr_t> drvreinit_cb;
+    std::vector<addr_t> drvreinit2_cb;
+    std::vector<addr_t> nmi_cb;
+    std::vector<addr_t> priority_cb;
+    std::vector<addr_t> emp_cb;
+    std::vector<addr_t> pnp_prof_cb;
+    std::vector<addr_t> pnp_class_cb;
+    std::vector<addr_t> w32callouts;
+    std::vector<addr_t> wfpcallouts;
+
+    virtual bool stop_impl() override;
+};
 
 /*
 process, thread, image:
@@ -174,30 +213,3 @@ typedef struct _SEP_LOGON_SESSION_TERMINATED_NOTIFICATION {
     PSE_LOGON_SESSION_TERMINATED_ROUTINE CallbackRoutine;
 } SEP_LOGON_SESSION_TERMINATED_NOTIFICATION, *PSEP_LOGON_SESSION_TERMINATED_NOTIFICATION;
 */
-
-struct cb_integrity_t
-{
-    std::vector<addr_t> process_cb;
-    std::vector<addr_t> thread_cb;
-    std::vector<addr_t> image_cb;
-    std::vector<addr_t> bugcheck_cb;
-    std::vector<addr_t> bcreason_cb;
-    std::vector<addr_t> registry_cb;
-    std::vector<addr_t> logon_cb;
-    std::vector<addr_t> power_cb;
-    std::vector<addr_t> shtdwn_cb;
-    std::vector<addr_t> shtdwn_lst_cb;
-    std::vector<addr_t> dbgprint_cb;
-    std::vector<addr_t> fschange_cb;
-    std::vector<addr_t> drvreinit_cb;
-    std::vector<addr_t> drvreinit2_cb;
-    std::vector<addr_t> nmi_cb;
-    std::vector<addr_t> priority_cb;
-    std::vector<addr_t> emp_cb;
-    std::vector<addr_t> pnp_prof_cb;
-    std::vector<addr_t> pnp_class_cb;
-    std::vector<addr_t> w32callouts;
-
-    explicit cb_integrity_t(drakvuf_t drakvuf);
-    void check(drakvuf_t drakvuf, const output_format_t& format);
-};

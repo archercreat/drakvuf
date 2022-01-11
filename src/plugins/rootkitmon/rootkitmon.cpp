@@ -154,7 +154,7 @@ static uint64_t align_by_page(uint64_t value)
  * Enumerate PE sections with mem_execute and mem_not_paged flags.
  * Returns vector of <virtual address, aligned section size>
  */
-static std::vector<std::pair<addr_t, size_t>> get_pe_code_sections(void* module, addr_t read_imagebase)
+static std::vector<std::pair<addr_t, size_t>> get_pe_sections(void* module, addr_t read_imagebase)
 {
     std::vector<std::pair<addr_t, size_t>> out;
 
@@ -166,9 +166,7 @@ static std::vector<std::pair<addr_t, size_t>> get_pe_code_sections(void* module,
         // we process only non pagable sections.
         // It is important to check for write access as well since there are sections
         // with RWX access rights on win7 and below. e.g. RWEXEC in hal.dll and ntoskrnl.
-        if (section->characteristics & mem_execute
-            && section->characteristics & mem_not_paged
-            && !(section->characteristics & mem_write))
+        if (section->characteristics & mem_not_paged && !(section->characteristics & mem_write))
         {
             auto aligned_size = align_by_page(section->virtual_size);
             out.emplace_back(section->virtual_address + read_imagebase, aligned_size);
@@ -381,7 +379,7 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t driver, void* ctx)
     }
 
     // Checksum every section and save it into `driver_sections_checksums`
-    for (const auto& [virt_addr, virt_size] : get_pe_code_sections(module, imagebase))
+    for (const auto& [virt_addr, virt_size] : get_pe_sections(module, imagebase))
     {
         auto aligned_size = align_by_page(virt_size);
 

@@ -145,7 +145,7 @@ static const std::vector<const char*> callout_syms =
 };
 
 // Map of Windows version -> [callout structure size, callout size offset, callout base offset]
-static const std::unordered_map<uint16_t, std::tuple<size_t, size_t, size_t>> wfp_offsets = 
+static const std::unordered_map<uint16_t, std::tuple<size_t, size_t, size_t>> wfp_offsets =
 {
     { win_7_sp1_ver, { 0x40, 0x548, 0x550 } },
     { win_10_1803_ver, { 0x50, 0x190, 0x198 } },
@@ -249,7 +249,7 @@ static inline std::pair<std::string, addr_t> get_module_by_addr(drakvuf_t drakvu
 }
 
 callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, output_format_t output)
-: pluginex(drakvuf, output), config{ *config }, format{ output }
+    : pluginex(drakvuf, output), config{ *config }, format{ output }
 {
     const addr_t krnl_base = drakvuf_get_kernel_base(drakvuf);
     const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
@@ -385,7 +385,7 @@ callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, ou
             VMI_SUCCESS != vmi_read_addr_va(vmi, gwfp + callout_off, 4, &callout_base))
             throw -1;
 
-        for (addr_t callout = callout_base; callout < callout_base + callout_count * callout_size; callout += callout_size)
+        for (addr_t callout = callout_base; callout < callout_base + callout_count* callout_size; callout += callout_size)
         {
             addr_t cb1 = 0, cb2 = 0;
             if (VMI_SUCCESS != vmi_read_addr_va(vmi, callout + 2 * ptrsize, 4, &cb1) ||

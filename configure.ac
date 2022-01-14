@@ -1,6 +1,6 @@
 #********************IMPORTANT DRAKVUF LICENSE TERMS**********************#
 #                                                                         #
-# DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  #
+# DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  #
 # Tamas K Lengyel is hereinafter referred to as the author.               #
 # This program is free software; you may redistribute and/or modify it    #
 # under the terms of the GNU General Public License as published by the   #
@@ -104,12 +104,14 @@
 
 AC_PREREQ([2.60])
 AC_INIT([DRAKVUF],
-        m4_join([], [0.8-git],
+        m4_join([], [1.0-git],
             m4_esyscmd_s([git log -1 --date=format:%Y%m%d%H%M%S --pretty=format:%cd]), [+], m4_esyscmd_s([git describe --always]), [-1]),
         [tamas@tklengyel.com], [],
         [https://drakvuf.com])
 AM_INIT_AUTOMAKE([1.10 no-define foreign subdir-objects])
-LT_INIT
+
+LT_INIT([disable-shared])
+
 AC_CONFIG_HEADERS([config.h])
 AC_CONFIG_MACRO_DIR([m4])
 
@@ -684,9 +686,6 @@ AC_HEADER_STDBOOL
 AC_TYPE_SIZE_T
 AC_HEADER_TIME
 AC_STRUCT_TM
-
-# Checks for library functions.
-AC_FUNC_MALLOC
 
 # Make sure we get standard PRI... definitions.
 AH_VERBATIM([__STDC_FORMAT_MACROS],

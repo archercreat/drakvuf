@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -980,6 +980,12 @@ void remove_trap(drakvuf_t drakvuf,
             if (!container->traps)
             {
                 struct remapped_gfn* remapped_gfn = (struct remapped_gfn*)g_hash_table_lookup(drakvuf->remapped_gfns, &current_gfn);
+                if ( !remapped_gfn )
+                {
+                    fprintf(stderr, "Critical error in removing int3\n");
+                    drakvuf->interrupted = -1;
+                    break;
+                }
                 uint8_t backup;
 
                 if ( VMI_FAILURE == vmi_read_8_pa(drakvuf->vmi, container->breakpoint.pa, &backup) )

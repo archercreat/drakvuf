@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -159,6 +159,8 @@ public:
     uint32_t amd_extended_cpu_features;
 
     procdump(drakvuf_t drakvuf, const procdump_config* config, output_format_t output);
+    procdump(const procdump&) = delete;
+    procdump& operator=(const procdump&) = delete;
     ~procdump();
 
     virtual bool stop_impl() override;

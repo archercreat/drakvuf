@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -119,16 +119,14 @@ bool json_lookup_array(
     drakvuf_t drakvuf,
     json_object* json,
     const char* symbol_subsymbol_array[][2],
-    addr_t array_size,
+    size_t array_size,
     addr_t* rva,
     addr_t* size)
 {
-    bool ret = false;
-
     if (!json)
     {
         fprintf(stderr, "JSON profile is NULL!\n");
-        return ret;
+        return false;
     }
 
     int errors = 0;
@@ -161,10 +159,7 @@ bool json_lookup_array(
         }
     }
 
-    if (errors == 0)
-        ret = true;
-
-    return ret;
+    return (errors == 0);
 }
 
 symbols_t* json_get_symbols(json_object* json)
@@ -188,7 +183,10 @@ symbols_t* json_get_symbols(json_object* json)
         if (!json_object_object_get_ex(json, "$FUNCTIONS", &symbols))
         {
             if (!json_object_object_get_ex(json, "$CONSTANTS", &symbols))
-                goto err_exit;
+            {
+                g_free(ret);
+                return NULL;
+            }
         }
     }
 
@@ -210,7 +208,9 @@ symbols_t* json_get_symbols(json_object* json)
             if (!json_object_object_get_ex(json_object_iter_peek_value(&it), "address", &address))
             {
                 PRINT_DEBUG("No address found for %s section found\n", json_object_iter_peek_name(&it));
-                goto err_exit;
+                g_free(ret->symbols);
+                g_free(ret);
+                return NULL;
             }
 
             ret->symbols[i].name = g_strdup(json_object_iter_peek_name(&it));
@@ -240,10 +240,6 @@ symbols_t* json_get_symbols(json_object* json)
     }
 
     return ret;
-
-err_exit:
-    free(ret);
-    return NULL;
 }
 
 void drakvuf_free_symbols(symbols_t* symbols)

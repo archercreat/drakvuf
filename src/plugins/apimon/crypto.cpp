@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -138,14 +138,14 @@ std::map < std::string, std::string > CryptGenKey_hook(drakvuf_t drakvuf, drakvu
         PRINT_DEBUG("CryptGenKey hook not supported for 64-bit process\n");
         return ret;
     }
-    addr_t hKey_addr = 0;
+    uint32_t hKey_addr = 0;
     HCRYPTKEY_s hKey;
     magic_s magic;
     key_data_s key_data;
 
     auto vmi = vmi_lock_guard(drakvuf);
 
-    if (VMI_SUCCESS != vmi_read_32_va(vmi, arguments[3], info->proc_data.pid, (uint32_t*)&hKey_addr))
+    if (VMI_SUCCESS != vmi_read_32_va(vmi, arguments[3], info->proc_data.pid, &hKey_addr))
         return ret;
 
     if (VMI_SUCCESS != vmi_read_va(vmi, hKey_addr, info->proc_data.pid, sizeof(hKey), &hKey, NULL))

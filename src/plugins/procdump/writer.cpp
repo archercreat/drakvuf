@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -111,17 +111,30 @@
 #include <cstdio>
 #include <cstdint>
 
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+
 namespace
 {
+
+static FILE* create_file(char const* path)
+{
+    int fd = creat(path, S_IWUSR | S_IRUSR);
+    return fdopen(fd, "w");
+}
 
 class BaseProcdumpWriter : public ProcdumpWriter
 {
 public:
     explicit BaseProcdumpWriter(std::string const& path)
-        : file{fopen(path.c_str(), "w")}
+        : file{create_file(path.c_str())}
     {
         if (!file) throw -1;
     }
+
+    BaseProcdumpWriter(const BaseProcdumpWriter&) = delete;
+    BaseProcdumpWriter& operator=(const BaseProcdumpWriter&) = delete;
 
     ~BaseProcdumpWriter()
     {
@@ -159,6 +172,9 @@ public:
         auto ret = deflateInit2(&z_file, Z_BEST_SPEED, Z_DEFLATED, window_bits, mem_level, Z_DEFAULT_STRATEGY);
         if (ret != Z_OK) throw -1;
     }
+
+    GzippedProcdumpWriter(const GzippedProcdumpWriter&) = delete;
+    GzippedProcdumpWriter& operator=(const GzippedProcdumpWriter&) = delete;
 
     ~GzippedProcdumpWriter()
     {

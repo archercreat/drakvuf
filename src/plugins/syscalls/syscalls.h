@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -140,6 +140,8 @@ public:
     std::vector<std::pair<char const*, fmt::Aarg>> fmt_args; // cache
 
     syscalls(drakvuf_t drakvuf, const syscalls_config* config, output_format_t output);
+    syscalls(const syscalls&) = delete;
+    syscalls& operator=(const syscalls&) = delete;
     ~syscalls();
 };
 

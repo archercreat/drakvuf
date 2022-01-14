@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -393,7 +393,9 @@ int drakvuf_plugins::start(const drakvuf_plugin_t plugin_id,
                         .compress_procdumps = options->compress_procdumps,
                         .procdump_on_finish = options->procdump_on_finish,
                         .terminated_processes = options->terminated_processes,
-                        .hal_profile = options->hal_profile
+                        .hal_profile = options->hal_profile,
+                        .disable_kideliverapc_hook = options->procdump_disable_kideliverapc_hook,
+                        .disable_kedelayexecutionthread_hook = options->procdump_disable_kedelayexecutionthread_hook
                     };
                     this->plugins[plugin_id] =
                         std::make_unique<procdump2>(this->drakvuf, &config, this->output);

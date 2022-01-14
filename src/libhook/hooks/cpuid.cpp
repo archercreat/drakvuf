@@ -101,34 +101,53 @@
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
  ***************************************************************************/
+#include <libhook/hooks/cpuid.hpp>
 
-#ifndef EXPLOITMON_H
-#define EXPLOITMON_H
-
-#include "plugins/plugins_ex.h"
-
-struct exploitmon_config
+namespace libhook
 {
-    // Detect kernel thread execution in user mode
-    // NOTE This degrades performance
-    const bool enable_k2u;
-};
 
-class exploitmon: public pluginex
+CpuidHook::~CpuidHook()
 {
-public:
-    const output_format_t format;
-    // vector of [pid, token]
-    std::vector<std::pair<addr_t, addr_t>> live_processes;
-    size_t* offsets;
-    uint64_t ex_fast_ref_mask = 0;
-    bool done_final_analysis;
-    exploitmon(drakvuf_t drakvuf, struct exploitmon_config* c, output_format_t output);
-    exploitmon(const exploitmon&) = delete;
-    exploitmon& operator=(const exploitmon&) = delete;
-    ~exploitmon();
+    if (this->drakvuf_ && this->trap_)
+    {
+        PRINT_DEBUG("[LIBHOOK] destroying cpuid hook...\n");
+        // read in libhook.hpp why this happens
+        this->trap_->cb = [](drakvuf_t, drakvuf_trap_info_t*) -> event_response_t
+        {
+            PRINT_DEBUG("[LIBHOOK] drakvuf called deleted hook, replaced by nullstub\n");
+            return VMI_EVENT_RESPONSE_NONE;
+        };
+        drakvuf_remove_trap(this->drakvuf_, this->trap_, [](drakvuf_trap_t* trap)
+        {
+            delete static_cast<CallResult*>(trap->data);
+            delete trap;
+        });
+    }
+    else
+    {
+        // otherwise this has been moved from and we don't free the trap
+        // as the ownership has been passed elsewhere, so we do nothing
+        PRINT_DEBUG("[LIBHOOK] destruction not needed, as cpuid hook was moved from\n");
+    }
+}
 
-    virtual bool stop_impl() override;
-};
+CpuidHook::CpuidHook(CpuidHook&& rhs) noexcept
+    : BaseHook(std::forward<BaseHook>(rhs))
+{
+    std::swap(this->trap_, rhs.trap_);
+    std::swap(this->callback_, rhs.callback_);
+}
 
-#endif
+CpuidHook& CpuidHook::operator=(CpuidHook&& rhs) noexcept
+{
+    std::swap(this->trap_, rhs.trap_);
+    std::swap(this->callback_, rhs.callback_);
+    return *this;
+}
+
+CpuidHook::CpuidHook(drakvuf_t drakvuf, cb_wrapper_t cb)
+    : BaseHook(drakvuf),
+      callback_(cb)
+{}
+
+} // namespace libhook

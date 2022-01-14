@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -135,6 +135,8 @@ public:
     };
 
     win_filetracer(drakvuf_t drakvuf, output_format_t output);
+    win_filetracer(const win_filetracer&) = delete;
+    win_filetracer& operator=(const win_filetracer&) = delete;
     ~win_filetracer();
 };
 

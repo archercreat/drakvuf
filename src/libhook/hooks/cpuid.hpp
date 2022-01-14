@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -101,22 +101,101 @@
  * https://github.com/tklengyel/drakvuf/COPYING)                           *
  *                                                                         *
  ***************************************************************************/
-
 #pragma once
 
-#include <memory>
+#include <string>
+#include <libhook/call_result.hpp>
+#include <libhook/hooks/base.hpp>
 
-class ProcdumpWriter
+namespace libhook
+{
+
+class CpuidHook : public BaseHook
 {
 public:
-    virtual ~ProcdumpWriter() = default;
+    /**
+     * Factory function to create the trap and perform hooking at the same time.
+     */
+    template<typename Params = CallResult>
+    [[nodiscard]]
+    static auto create(drakvuf_t, cb_wrapper_t cb, int ttl)
+    -> std::unique_ptr<CpuidHook>;
 
-    virtual bool append(uint8_t const* data, size_t size) = 0;
-    virtual bool finish() = 0;
+    /**
+     * unhook on dctor
+     */
+    ~CpuidHook() override;
+
+    /**
+     * delete copy ctor, as this class has ownership via RAII
+     */
+    CpuidHook(const CpuidHook&) = delete;
+
+    /**
+     * move ctor, required for move semantics to work properly
+     * important to be noexcept, otherwise bad things will happen
+     */
+    CpuidHook(CpuidHook&&) noexcept;
+
+    /**
+     * delete copy assignment operator, as this class has ownership via RAII
+     */
+    CpuidHook& operator=(const CpuidHook&) = delete;
+
+    /**
+     * move assignment operator, required for move semantics to work properly
+     * important to be noexcept, otherwise bad things will happen
+     */
+    CpuidHook& operator=(CpuidHook&&) noexcept;
+
+    cb_wrapper_t callback_;
+    drakvuf_trap_t* trap_;
+
+protected:
+    /**
+     * Hide ctor from users, as we enforce factory function usage.
+     */
+    CpuidHook(drakvuf_t, cb_wrapper_t cb);
 };
 
-class ProcdumpWriterFactory
+template<typename Params>
+auto CpuidHook::create(drakvuf_t drakvuf, cb_wrapper_t cb, int ttl)
+-> std::unique_ptr<CpuidHook>
 {
-public:
-    static std::unique_ptr<ProcdumpWriter> build(std::string const& path, bool use_compression);
-};
+    PRINT_DEBUG("[LIBHOOK] creating cpuid hook\n");
+
+    // not using std::make_unique because ctor is private
+    auto hook = std::unique_ptr<CpuidHook>(new CpuidHook(drakvuf, cb));
+    hook->trap_ = new drakvuf_trap_t();
+
+    hook->trap_->name = "libhook cpuid";
+    hook->trap_->type = CPUID;
+    hook->trap_->ttl = ttl;
+    hook->trap_->cb = [](drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+    {
+        return GetTrapHook<CpuidHook>(info)->callback_(drakvuf, info);
+    };
+
+    static_assert(std::is_base_of_v<CallResult, Params>, "Params must derive from CallResult");
+    static_assert(std::is_default_constructible_v<Params>, "Params must be default constructible");
+
+    // populate backref
+    auto* params = new Params();
+    params->hook_ = hook.get();
+    hook->trap_->data = static_cast<void*>(params);
+
+    if (!drakvuf_add_trap(drakvuf, hook->trap_))
+    {
+        PRINT_DEBUG("[LIBHOOK] failed to create cpuid trap!\n");
+        delete static_cast<CallResult*>(hook->trap_->data);
+        hook->trap_->data = nullptr;
+        delete hook->trap_;
+        hook->trap_ = nullptr;
+        return std::unique_ptr<CpuidHook>();
+    }
+
+    PRINT_DEBUG("[LIBHOOK] cpuid hook OK\n");
+    return hook;
+}
+
+};  // namespace libhook

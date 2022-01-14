@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -356,13 +356,13 @@ bool json_get_struct_members_array_rva(
     drakvuf_t drakvuf,
     json_object* json_profile,
     const char* struct_name_subsymbol_array[][2],
-    addr_t array_size,
+    size_t array_size,
     addr_t* rva) NOEXCEPT;
 static inline
 bool drakvuf_get_kernel_struct_members_array_rva(
     drakvuf_t drakvuf,
     const char* struct_name_subsymbol_array[][2],
-    addr_t array_size,
+    size_t array_size,
     addr_t* rva)
 {
     vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
@@ -408,8 +408,8 @@ addr_t drakvuf_get_obj_by_handle(drakvuf_t drakvuf,
 
 os_t drakvuf_get_os_type(drakvuf_t drakvuf) NOEXCEPT;
 page_mode_t drakvuf_get_page_mode(drakvuf_t drakvuf) NOEXCEPT;
-int drakvuf_get_address_width(drakvuf_t drakvuf) NOEXCEPT;
-int drakvuf_get_process_address_width(drakvuf_t drakvuf,
+size_t drakvuf_get_address_width(drakvuf_t drakvuf) NOEXCEPT;
+size_t drakvuf_get_process_address_width(drakvuf_t drakvuf,
     drakvuf_trap_info_t* info) NOEXCEPT;
 int drakvuf_read_addr(drakvuf_t drakvuf, drakvuf_trap_info_t* info,
     const access_context_t* ctx, addr_t* addr) NOEXCEPT;

@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
 *                                                                         *
-* DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+* DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
 * Tamas K Lengyel is hereinafter referred to as the author.               *
 * This program is free software; you may redistribute and/or modify it    *
 * under the terms of the GNU General Public License as published by the   *
@@ -388,7 +388,7 @@ static void extract_ca_file(filedelete* f,
     addr_t subsection = control_area + f->control_area_size;
     addr_t segment = 0;
     addr_t test = 0;
-    addr_t test2 = 0;
+    uint32_t test2 = 0;
     size_t filesize = 0;
 
     /* Check whether subsection points back to the control area */
@@ -405,10 +405,10 @@ static void extract_ca_file(filedelete* f,
         return;
 
     ctx->addr = segment + f->offsets[SEGMENT_TOTALNUMBEROFPTES];
-    if ( VMI_FAILURE == vmi_read_32(vmi, ctx, (uint32_t*)&test2) )
+    if ( VMI_FAILURE == vmi_read_32(vmi, ctx, &test2) )
         return;
 
-    if ( test != (test2 * 4096) )
+    if ( test != (static_cast<addr_t>(test2) * 4096) )
         return;
 
     const int curr_sequence_number = ++f->sequence_number;
@@ -430,7 +430,7 @@ static void extract_ca_file(filedelete* f,
             break;
 
         addr_t base = 0;
-        addr_t start = 0;
+        uint32_t start = 0;
         uint32_t ptes = 0;
 
         ctx->addr = subsection + f->offsets[SUBSECTION_SUBSECTIONBASE];
@@ -442,14 +442,14 @@ static void extract_ca_file(filedelete* f,
             break;
 
         ctx->addr = subsection + f->offsets[SUBSECTION_STARTINGSECTOR];
-        if ( VMI_FAILURE == vmi_read_32(vmi, ctx, (uint32_t*)&start) )
+        if ( VMI_FAILURE == vmi_read_32(vmi, ctx, &start) )
             break;
 
         /*
          * The offset into the file is stored implicitely
          * based on the PTE's location within the Subsection.
          */
-        addr_t subsection_offset = start * 0x200;
+        addr_t subsection_offset = static_cast<addr_t>(start) * 0x200;
         addr_t ptecount;
         for (ptecount=0; ptecount < ptes; ptecount++)
         {
@@ -1449,12 +1449,21 @@ filedelete::filedelete(drakvuf_t drakvuf, const filedelete_config* c, output_for
 filedelete::~filedelete()
 {
     stop();
+    /* NOTE One should rund drakvuf loop to restore VM state.
+     *
+     * The plug-in injects syscalls thuns changes the state. So to avoid BSOD
+     * one should restore state here. This requires to allow VM to live for a
+     * while.
+     *
+     * Hint: there is no need to waite all files read finish. Just waite every
+     * hook and restore state.
+     */
+    for (unsigned long i = 0; i < sizeof(traps)/sizeof(traps[0]); ++i)
+        drakvuf_remove_trap(drakvuf, &traps[i], nullptr);
     delete[] offsets;
 }
 
 bool filedelete::stop_impl()
 {
-    for (unsigned long i = 0; i < sizeof(traps)/sizeof(traps[0]); ++i)
-        drakvuf_remove_trap(drakvuf, &traps[i], nullptr);
     return closing_handles.empty();
 }

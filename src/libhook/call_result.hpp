@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -113,7 +113,7 @@ namespace libhook
 struct CallResult
 {
     CallResult()
-        : target_pid(), target_tid(), target_rsp()
+        : target_pid(), target_tid(), target_rsp(), hook_()
     {}
 
     virtual ~CallResult() = default;

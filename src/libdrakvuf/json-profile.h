@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -109,7 +109,7 @@ bool json_lookup_array(
     drakvuf_t drakvuf,
     json_object* json,
     const char* symbol_subsymbol_array[][2],
-    addr_t array_size,
+    size_t array_size,
     addr_t* address,
     addr_t* size);
 

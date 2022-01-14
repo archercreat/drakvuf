@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -340,6 +340,8 @@ next:
         char* symbol_name;
         ctx.addr = dynstr_offset + symbol_offset;
         symbol_name = vmi_read_str(vmi, &ctx);
+        if (!symbol_name)
+            return -1;
         addr_t symbol_size = strlen(symbol_name);
         if (strcmp(symbol_name, sym) == 0)
         {

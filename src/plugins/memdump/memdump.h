@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -144,6 +144,8 @@ public:
     wanted_hooks_t wanted_hooks;
 
     memdump(drakvuf_t drakvuf, const memdump_config* config, output_format_t output);
+    memdump(const memdump&) = delete;
+    memdump& operator=(const memdump&) = delete;
     ~memdump();
 
     void userhook_init(drakvuf_t drakvuf, const memdump_config* c, output_format_t output);

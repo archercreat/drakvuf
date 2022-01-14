@@ -1,6 +1,6 @@
 #********************IMPORTANT DRAKVUF LICENSE TERMS**********************#
 #                                                                         #
-# DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  #
+# DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  #
 # Tamas K Lengyel is hereinafter referred to as the author.               #
 # This program is free software; you may redistribute and/or modify it    #
 # under the terms of the GNU General Public License as published by the   #
@@ -269,8 +269,8 @@ if PLUGIN_PROCDUMP2
 sources += procdump2/procdump2.cpp
 sources += procdump2/procdump2.h
 sources += procdump2/private2.h
-sources += procdump2/writer2.cpp
-sources += procdump2/writer2.h
+sources += procdump2/writer.cpp
+sources += procdump2/writer.h
 sources += procdump2/minidump2.h
 endif
 

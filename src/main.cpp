@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -296,6 +296,10 @@ static void print_usage()
 #ifdef ENABLE_PLUGIN_PROCDUMP2
         "\t --procdump-disable-dump-on-finish\n"
         "\t                           Disable dumping of injected process memory upon completion of monitoring\n"
+        "\t --procdump-disable-kideliverapc-hook\n"
+        "\t                           Disables hook on KiDeliverApc\n"
+        "\t --procdump-disable-kedelayexecutionthread-hook\n"
+        "\t                           Disables hook on KeDelayExecutionThread\n"
 #endif
 #ifdef ENABLE_PLUGIN_CODEMON
         "\t --codemon-dump-dir <directory>\n"
@@ -388,7 +392,7 @@ int main(int argc, char** argv)
 
     eprint_current_time();
 
-    fprintf(stderr, "%s v%s Copyright (C) 2014-2021 Tamas K Lengyel\n",
+    fprintf(stderr, "%s v%s Copyright (C) 2014-2022 Tamas K Lengyel\n",
         PACKAGE_NAME, PACKAGE_VERSION);
 
     if ( __DRAKVUF_PLUGIN_LIST_MAX == 0 )
@@ -423,6 +427,8 @@ int main(int argc, char** argv)
         opt_procdump_dir,
         opt_compress_procdumps,
         opt_procdump_disable_dump_on_finish,
+        opt_procdump_disable_kideliverapc_hook,
+        opt_procdump_disable_kedelayexecutionthread_hook,
         opt_json_clr,
         opt_json_mscorwks,
         opt_disable_sysret,
@@ -487,6 +493,8 @@ int main(int argc, char** argv)
         {"procdump-dir", required_argument, NULL, opt_procdump_dir},
         {"compress-procdumps", no_argument, NULL, opt_compress_procdumps},
         {"procdump-disable-dump-on-finish", no_argument, NULL, opt_procdump_disable_dump_on_finish},
+        {"procdump-disable-kideliverapc-hook", no_argument, NULL, opt_procdump_disable_kideliverapc_hook},
+        {"procdump-disable-kedelayexecutionthread-hook", no_argument, NULL, opt_procdump_disable_kedelayexecutionthread_hook},
         {"json-clr", required_argument, NULL, opt_json_clr},
         {"json-mscorwks", required_argument, NULL, opt_json_mscorwks},
         {"syscall-hooks-list", required_argument, NULL, 'S'},
@@ -758,6 +766,12 @@ int main(int argc, char** argv)
 #ifdef ENABLE_PLUGIN_PROCDUMP2
             case opt_procdump_disable_dump_on_finish:
                 procdump_on_finish = false;
+                break;
+            case opt_procdump_disable_kideliverapc_hook:
+                options.procdump_disable_kideliverapc_hook = true;
+                break;
+            case opt_procdump_disable_kedelayexecutionthread_hook:
+                options.procdump_disable_kedelayexecutionthread_hook = true;
                 break;
 #endif
 #ifdef ENABLE_PLUGIN_CODEMON

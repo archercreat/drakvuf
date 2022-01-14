@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -118,7 +118,7 @@ public:
      */
     template<typename Params = CallResult>
     [[nodiscard]]
-    static auto create(drakvuf_t, const std::string& syscall_name, cb_wrapper_t cb, int ttl)
+    static auto create(drakvuf_t, const std::string& syscall_name, cb_wrapper_t cb, uint64_t ttl)
     -> std::unique_ptr<SyscallHook>;
 
     /**
@@ -160,7 +160,7 @@ protected:
 };
 
 template<typename Params>
-auto SyscallHook::create(drakvuf_t drakvuf, const std::string& syscall_name, cb_wrapper_t cb, int ttl)
+auto SyscallHook::create(drakvuf_t drakvuf, const std::string& syscall_name, cb_wrapper_t cb, uint64_t ttl)
 -> std::unique_ptr<SyscallHook>
 {
     PRINT_DEBUG("[LIBHOOK] creating syscall hook\n");

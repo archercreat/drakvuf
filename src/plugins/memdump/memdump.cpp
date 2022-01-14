@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -398,7 +398,8 @@ static bool dump_if_points_to_executable_memory(
 
 bool inspect_stack_ptr(drakvuf_t drakvuf, drakvuf_trap_info_t* info, memdump* plugin, bool is_32bit, addr_t stack_ptr)
 {
-    vmi_instance_t vmi = drakvuf_lock_and_get_vmi(drakvuf);
+    auto vmi = vmi_lock_guard(drakvuf);
+
     ACCESS_CONTEXT(ctx,
         .translate_mechanism = VMI_TM_PROCESS_DTB,
         .dtb = info->regs->cr3,
@@ -477,7 +478,6 @@ bool inspect_stack_ptr(drakvuf_t drakvuf, drakvuf_trap_info_t* info, memdump* pl
 
     PRINT_DEBUG("[MEMDUMP] Done stack walk\n");
 
-    drakvuf_release_vmi(drakvuf);
     return VMI_EVENT_RESPONSE_NONE;
 }
 
@@ -540,7 +540,7 @@ static event_response_t shellcode_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
 
     auto plugin = get_trap_plugin<memdump>(info);
 
-    vmi_lock_guard lg(drakvuf);
+    auto vmi = vmi_lock_guard(drakvuf);
     ACCESS_CONTEXT(ctx,
         .translate_mechanism = VMI_TM_PROCESS_DTB,
         .dtb = info->regs->cr3,
@@ -548,7 +548,7 @@ static event_response_t shellcode_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
     );
 
     addr_t base_address;
-    if (VMI_SUCCESS != vmi_read_addr(lg.vmi, &ctx, &base_address))
+    if (VMI_SUCCESS != vmi_read_addr(vmi, &ctx, &base_address))
     {
         PRINT_DEBUG("[MEMDUMP] Failed to read base address in NtFreeVirtualMemory\n");
         return VMI_EVENT_RESPONSE_NONE;
@@ -562,7 +562,7 @@ static event_response_t shellcode_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
     }
 
     page_info_t p_info = {};
-    if (vmi_pagetable_lookup_extended(lg.vmi, dtb, base_address, &p_info) == VMI_SUCCESS)
+    if (vmi_pagetable_lookup_extended(vmi, dtb, base_address, &p_info) == VMI_SUCCESS)
     {
         bool pte_valid       = (p_info.x86_ia32e.pte_value & (1UL << 0))  != 0;
         bool page_writeable  = (p_info.x86_ia32e.pte_value & (1UL << 1))  != 0;
@@ -574,7 +574,10 @@ static event_response_t shellcode_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* inf
             PRINT_DEBUG("[MEMDUMP] Dumping RWX vad\n");
             ctx.addr = mmvad.starting_vpn << 12;
             ctx.dtb  = dtb;
-            dump_memory_region(drakvuf, lg.vmi, info, plugin, &ctx, len_bytes, "Possible shellcode detected", nullptr, false);
+            if (!dump_memory_region(drakvuf, vmi, info, plugin, &ctx, len_bytes, "Possible shellcode detected", nullptr, false))
+            {
+                PRINT_DEBUG("[MEMDUMP] Failed to store memory dump due to an internal error\n");
+            }
         }
     }
     return VMI_EVENT_RESPONSE_NONE;
@@ -889,22 +892,22 @@ static event_response_t set_information_thread_hook_cb(drakvuf_t drakvuf, drakvu
         .dtb = info->regs->cr3,
         .addr = wow64_context + plugin->wow64context_eax_rva
     );
-    addr_t eax = 0;
-    if (VMI_SUCCESS != vmi_read_32(vmi, &ctx, (uint32_t*)&eax))
+    uint32_t wow_eax = 0;
+    if (VMI_SUCCESS != vmi_read_32(vmi, &ctx, &wow_eax))
     {
         PRINT_DEBUG("[MEMDUMP] Failed to read eax field from wow64_context\n");
         return VMI_EVENT_RESPONSE_NONE;
     }
-    addr_t eip = 0;
+    uint32_t wow_eip = 0;
     ctx.addr = wow64_context + plugin->wow64context_eip_rva;
-    if (VMI_SUCCESS != vmi_read_32(vmi, &ctx, (uint32_t*)&eip))
+    if (VMI_SUCCESS != vmi_read_32(vmi, &ctx, &wow_eip))
     {
         PRINT_DEBUG("[MEMDUMP] Failed to read eip field from wow64_context\n");
         return VMI_EVENT_RESPONSE_NONE;
     }
 
-    dump_if_points_to_executable_memory(drakvuf, info, vmi, resumed_eprocess, eax, "SetThreadContext heuristic", nullptr);
-    dump_if_points_to_executable_memory(drakvuf, info,  vmi, resumed_eprocess, eip, "SetThreadContext heuristic", nullptr);
+    dump_if_points_to_executable_memory(drakvuf, info, vmi, resumed_eprocess, wow_eax, "SetThreadContext heuristic", nullptr);
+    dump_if_points_to_executable_memory(drakvuf, info, vmi, resumed_eprocess, wow_eip, "SetThreadContext heuristic", nullptr);
 
     return VMI_EVENT_RESPONSE_NONE;
 }
@@ -916,10 +919,12 @@ bool dotnet_assembly_native_load_image_cb(drakvuf_t drakvuf, drakvuf_trap_info_t
     auto vmi = vmi_lock_guard(drakvuf);
     vmi_v2pcache_flush(vmi, info->regs->cr3);
 
+    addr_t addr = drakvuf_get_function_argument(drakvuf, info, 1) + ptr_size;
+
     ACCESS_CONTEXT(ctx,
         .translate_mechanism = VMI_TM_PROCESS_DTB,
         .dtb = info->regs->cr3,
-        .addr = info->regs->rcx + ptr_size
+        .addr = addr
     );
 
     addr_t data_size = 0;
@@ -955,30 +960,34 @@ memdump::memdump(drakvuf_t drakvuf, const memdump_config* c, output_format_t out
     }
 
     json_object* json_wow = drakvuf_get_json_wow(drakvuf);
+    bool const is64bit = (drakvuf_get_page_mode(drakvuf) == VMI_PM_IA32E);
 
-    if (json_wow)
+    if (is64bit)
     {
-        if (!json_get_struct_member_rva(drakvuf, json_wow, "_LDR_DATA_TABLE_ENTRY", "DllBase", &this->dll_base_wow_rva) ||
-            !json_get_struct_member_rva(drakvuf, json_wow, "_CONTEXT", "Eip", &this->wow64context_eip_rva) ||
-            !json_get_struct_member_rva(drakvuf, json_wow, "_CONTEXT", "Eax", &this->wow64context_eax_rva))
+        if (json_wow)
         {
-            throw -1;
+            if (!json_get_struct_member_rva(drakvuf, json_wow, "_LDR_DATA_TABLE_ENTRY", "DllBase", &this->dll_base_wow_rva) ||
+                !json_get_struct_member_rva(drakvuf, json_wow, "_CONTEXT", "Eip", &this->wow64context_eip_rva) ||
+                !json_get_struct_member_rva(drakvuf, json_wow, "_CONTEXT", "Eax", &this->wow64context_eax_rva))
+            {
+                throw -1;
+            }
         }
-    }
-    else
-    {
-        PRINT_DEBUG("Memdump works better when there is a JSON profile for WoW64 NTDLL (-w)\n");
+        else
+        {
+            PRINT_DEBUG("Memdump works better when there is a JSON profile for WoW64 NTDLL (-w)\n");
+        }
     }
 
     if (c->clr_profile)
         this->setup_dotnet_hooks(drakvuf, "clr.dll", c->clr_profile);
     else
-        PRINT_DEBUG("clr.dll profile not found, memdump will procede without .NET hooks\n");
+        PRINT_DEBUG("clr.dll profile not found, memdump will proceed without .NET hooks\n");
 
     if (c->mscorwks_profile)
         this->setup_dotnet_hooks(drakvuf, "mscorwks.dll", c->mscorwks_profile);
     else
-        PRINT_DEBUG("mscorwks.dll profile not found, memdump will procede without .NET hooks\n");
+        PRINT_DEBUG("mscorwks.dll profile not found, memdump will proceed without .NET hooks\n");
 
     breakpoint_in_system_process_searcher bp;
     if (!c->memdump_disable_free_vm)
@@ -996,8 +1005,8 @@ memdump::memdump(drakvuf_t drakvuf, const memdump_config* c, output_format_t out
     if (!c->memdump_disable_create_thread)
         if (!register_trap(nullptr, create_remote_thread_hook_cb,   bp.for_syscall_name("NtCreateThreadEx")))
             throw -1;
-    if (!c->memdump_disable_set_thread)
-        if (json_wow && !register_trap(nullptr, set_information_thread_hook_cb, bp.for_syscall_name("NtSetInformationThread")))
+    if (!c->memdump_disable_set_thread && is64bit && json_wow)
+        if (!register_trap(nullptr, set_information_thread_hook_cb, bp.for_syscall_name("NtSetInformationThread")))
             throw -1;
     if (!c->memdump_disable_shellcode_detect)
         if (!register_trap(nullptr, shellcode_cb, bp.for_syscall_name("NtFreeVirtualMemory")))

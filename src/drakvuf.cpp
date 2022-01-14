@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -236,8 +236,7 @@ drakvuf_c::~drakvuf_c()
 
     delete plugins;
 
-    if (drakvuf)
-        drakvuf_close(drakvuf, leave_paused);
+    drakvuf_close(drakvuf, leave_paused);
 }
 
 void drakvuf_c::interrupt(int signal)
@@ -299,7 +298,7 @@ void drakvuf_c::toggle_context_interception(GSList* processes)
             char* pid_str = tokens[1];
             strictness = (pid_str == NULL ? MATCH_NAME:MATCH_PID_NAME);
 
-            if (strictness)
+            if (pid_str)
                 pid = atoi(pid_str);
         }
 

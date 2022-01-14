@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -362,7 +362,7 @@ static enum rtlcopy_status dump_with_rtlcopymemory(drakvuf_t drakvuf,
     }
 
     addr_t start_addr = vad_start + idx * VMI_PS_4KB;
-    ctx->current_dump_size = ptes_to_dump * VMI_PS_4KB;
+    ctx->current_dump_size = static_cast<size_t>(ptes_to_dump) * VMI_PS_4KB;
 
     if (!inject_copy_memory(drakvuf, info, ctx, start_addr, ctx->current_dump_size))
     {
@@ -1056,5 +1056,5 @@ procdump::~procdump()
 bool procdump::stop_impl()
 {
     destroy_all_traps();
-    return terminating.empty();
+    return true;
 }

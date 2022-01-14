@@ -1,6 +1,6 @@
 /*********************IMPORTANT DRAKVUF LICENSE TERMS***********************
  *                                                                         *
- * DRAKVUF (C) 2014-2021 Tamas K Lengyel.                                  *
+ * DRAKVUF (C) 2014-2022 Tamas K Lengyel.                                  *
  * Tamas K Lengyel is hereinafter referred to as the author.               *
  * This program is free software; you may redistribute and/or modify it    *
  * under the terms of the GNU General Public License as published by the   *
@@ -576,7 +576,7 @@ bool json_get_struct_members_array_rva(
     drakvuf_t drakvuf,
     json_object* json,
     const char* struct_name_symbol_array[][2],
-    addr_t array_size,
+    size_t array_size,
     addr_t* rva)
 {
     return json_lookup_array(
@@ -618,7 +618,7 @@ page_mode_t drakvuf_get_page_mode(drakvuf_t drakvuf)
     return drakvuf->pm;
 }
 
-int drakvuf_get_address_width(drakvuf_t drakvuf)
+size_t drakvuf_get_address_width(drakvuf_t drakvuf)
 {
     return drakvuf->address_width;
 }
@@ -628,7 +628,7 @@ bool drakvuf_process_is32bit(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     return (drakvuf_get_address_width(drakvuf) == 4) || drakvuf_is_wow64(drakvuf, info);
 }
 
-int drakvuf_get_process_address_width(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+size_t drakvuf_get_process_address_width(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     return drakvuf_process_is32bit(drakvuf, info) ? 4 : 8;
 }
@@ -639,7 +639,13 @@ int drakvuf_read_addr(drakvuf_t drakvuf, drakvuf_trap_info_t* info, const access
         *value = 0;
     bool is32bit = drakvuf_process_is32bit(drakvuf, info);
     if (is32bit)
-        return vmi_read_32(drakvuf->vmi, ctx, (uint32_t*)value);
+    {
+        uint32_t value32 = 0;
+        int status = vmi_read_32(drakvuf->vmi, ctx, &value32);
+        if (value)
+            *value = value32;
+        return status;
+    }
     else
         return vmi_read_64(drakvuf->vmi, ctx, value);
 }
@@ -1045,10 +1051,7 @@ bool drakvuf_disable_ipt(drakvuf_t drakvuf, unsigned int vcpu)
     if ( !is_valid_vcpu(drakvuf, vcpu) )
         return false;
 
-    if ( !xen_disable_ipt(drakvuf->xen, drakvuf->domID, vcpu, &drakvuf->ipt_state[vcpu]) )
-        return false;
-
-    return true;
+    return xen_disable_ipt(drakvuf->xen, drakvuf->domID, vcpu, &drakvuf->ipt_state[vcpu]);
 }
 
 void drakvuf_intercept_process_add(drakvuf_t drakvuf, char* process_name, vmi_pid_t pid, context_match_t strict)

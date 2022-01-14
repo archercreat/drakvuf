@@ -428,7 +428,7 @@ bool callbackmon::stop_impl()
     auto report = [&](const auto& list_name, const auto& addr, const auto& action)
     {
         const auto& [name, base] = get_module_by_addr(drakvuf, addr);
-        fmt::print(format, "rootkitmon", drakvuf, nullptr,
+        fmt::print(format, "callbackmon", drakvuf, nullptr,
             keyval("Type", fmt::Qstr("Callback")),
             keyval("ListName", fmt::Qstr(list_name)),
             keyval("Module", fmt::Qstr(name)),

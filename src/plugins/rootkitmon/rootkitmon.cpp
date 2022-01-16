@@ -134,6 +134,13 @@ static uint64_t align_by_page(uint64_t value)
     return aligned_size;
 }
 
+static sha256_checksum_t& merge(sha256_checksum_t& s1, const sha256_checksum_t& s2)
+{
+    for (int i = 0; i < s1.size(); i++)
+        s1[i] ^= s2[i];
+    return s1;
+}
+
 /**
  * Enumerate PE sections with mem_execute and mem_not_paged flags.
  * Returns vector of <virtual address, aligned section size>
@@ -362,20 +369,16 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t driver, void* ctx)
         return;
     }
 
+    sha256_checksum_t driver_hash{ 0 };
+
     // Checksum every section and save it into `driver_sections_checksums`
     for (const auto& [virt_addr, virt_size] : get_pe_sections(module, imagebase))
     {
         auto aligned_size = align_by_page(virt_size);
-
-        checksum_data_t data =
-        {
-            .virtual_address = virt_addr,
-            .virtual_size = aligned_size,
-            .checksum = calc_checksum(vmi, virt_addr, aligned_size)
-        };
-        plugin->driver_sections_checksums[driver].push_back(data);
-
+        auto section_hash = calc_checksum(vmi, virt_addr, aligned_size);
+        driver_hash       = merge(driver_hash, section_hash);
     }
+    plugin->driver_sections_checksums[driver] = std::move(driver_hash);
     munmap(module, VMI_PS_4KB);
 }
 
@@ -387,41 +390,30 @@ void rootkitmon::check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* 
     // Collect new checksums
     drakvuf_enumerate_drivers(drakvuf, driver_visitor, static_cast<void*>(this));
     // Compare
-    for (const auto& [driver, infos] : this->driver_sections_checksums)
+    for (const auto& [driver, checksum] : this->driver_sections_checksums)
     {
         // Find driver object
         if (past_drivers_checksums.find(driver) == past_drivers_checksums.end())
             continue;
 
-        const auto& p_infos = past_drivers_checksums[driver];
-
-        for (const auto& checksum_data : infos)
+        const auto& p_checksum = past_drivers_checksums[driver];
+        if (checksum != p_checksum)
         {
-            for (const auto& p_checksum_data : p_infos)
             {
-                if (checksum_data.virtual_address == p_checksum_data.virtual_address)
+                vmi_lock_guard vmi(drakvuf);
+                unicode_string_t* drvname = drakvuf_read_unicode_va(vmi, driver + this->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4);
+                if (drvname)
                 {
-                    if (checksum_data.checksum != p_checksum_data.checksum)
-                    {
-                        {
-                            vmi_lock_guard vmi(drakvuf);
-                            unicode_string_t* drvname = drakvuf_read_unicode_va(vmi, driver + this->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4);
-                            if (drvname)
-                            {
-                                fmt::print(this->format, "rootkitmon", drakvuf, info,
-                                    keyval("Reason", fmt::Qstr("Driver section modification")),
-                                    keyval("Driver", fmt::Qstr((const char*)drvname->contents)));
-                                vmi_free_unicode_str(drvname);
-                            }
-                            else
-                            {
-                                fmt::print(this->format, "rootkitmon", drakvuf, info,
-                                    keyval("Reason", fmt::Qstr("Driver section modification")),
-                                    keyval("Driver", fmt::Qstr("Unknown")));
-                            }
-                        }
-                    }
-                    break;
+                    fmt::print(this->format, "rootkitmon", drakvuf, info,
+                        keyval("Reason", fmt::Qstr("Driver section modification")),
+                        keyval("Driver", fmt::Qstr((const char*)drvname->contents)));
+                    vmi_free_unicode_str(drvname);
+                }
+                else
+                {
+                    fmt::print(this->format, "rootkitmon", drakvuf, info,
+                        keyval("Reason", fmt::Qstr("Driver section modification")),
+                        keyval("Driver", fmt::Qstr("Unknown")));
                 }
             }
         }

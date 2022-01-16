@@ -154,7 +154,7 @@ public:
     addr_t type_idx_table;
     uint8_t ob_header_cookie;
 
-    std::unordered_map<driver_t, std::vector<checksum_data_t>> driver_sections_checksums;
+    std::unordered_map<driver_t, sha256_checksum_t> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
     // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
     std::unordered_map<driver_t, device_stack_t> driver_stacks;

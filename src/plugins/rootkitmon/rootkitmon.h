@@ -136,6 +136,7 @@ public:
     void check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
     void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
     void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+    void check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
 
     virtual bool stop_impl() override;
 

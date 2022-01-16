@@ -382,7 +382,6 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t driver, void* ctx)
     munmap(module, VMI_PS_4KB);
 }
 
-
 void rootkitmon::check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     auto past_drivers_checksums = std::move(this->driver_sections_checksums);
@@ -570,6 +569,26 @@ void rootkitmon::check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
         }
     }
 }
+void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    vmi_lock_guard vmi(drakvuf);
+    for (size_t i = 2; ; i++)
+    {
+        addr_t ob_type;
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
+            throw -1;
+
+        if (!ob_type)
+            break;
+
+        const auto& ob_ty_init_crc = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
+        if (this->ob_type_initiliazer_crc[i] != ob_ty_init_crc)
+        {
+            fmt::print(this->format, "rootkitmon", drakvuf, info,
+                keyval("Reason", fmt::Qstr("Object type initializer modification")));
+        }
+    }
+}
 /**
  * This trap is used to make final analysis.
 */
@@ -583,6 +602,7 @@ event_response_t rootkitmon::final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info
         check_driver_integrity(drakvuf, info);
         check_driver_objects(drakvuf, info);
         check_descriptors(drakvuf, info);
+        check_objects(drakvuf, info);
 
         done_final_analysis = true;
     }
@@ -912,6 +932,21 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
             // Enumerate all device_stacks of a particular driver
             driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
         }
+    }
+
+    // Enumerate every object type
+    for (size_t i = 2; ; i++)
+    {
+        addr_t ob_type;
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
+            throw -1;
+
+        // if reached the end
+        if (!ob_type)
+            break;
+
+        // CRC whole _OBJECT_TYPE_INITIALIZER structure
+        this->ob_type_initiliazer_crc[i] = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
     }
 
     // Enumerate descriptors on all cores

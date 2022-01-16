@@ -269,8 +269,8 @@ if PLUGIN_PROCDUMP2
 sources += procdump2/procdump2.cpp
 sources += procdump2/procdump2.h
 sources += procdump2/private2.h
-sources += procdump2/writer2.cpp
-sources += procdump2/writer2.h
+sources += procdump2/writer.cpp
+sources += procdump2/writer.h
 sources += procdump2/minidump2.h
 endif
 
@@ -336,6 +336,11 @@ if PLUGIN_ROOTKITMON
 sources += rootkitmon/rootkitmon.cpp
 sources += rootkitmon/rootkitmon.h
 sources += rootkitmon/private.h
+endif
+
+if PLUGIN_CALLBACKMON
+sources += callbackmon/callbackmon.cpp
+sources += callbackmon/callbackmon.h
 endif
 
 ###############################################################################

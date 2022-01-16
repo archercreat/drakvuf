@@ -432,7 +432,16 @@ void rootkitmon::check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* in
         if (!this->is32bit)
             for (const auto& drv_object : this->enumerate_driver_objects(vmi))
             {
-                this->driver_object_checksums[drv_object] = calc_checksum(vmi, drv_object + this->offsets[DRIVER_OBJECT_STARTIO], this->guest_ptr_size * 30);
+                auto drv_obj_crc = calc_checksum(vmi, drv_object + this->offsets[DRIVER_OBJECT_STARTIO], this->guest_ptr_size * 30);
+                addr_t fastio_addr = 0;
+                if (VMI_SUCCESS != vmi_read_addr_va(vmi, drv_object + this->offsets[DRIVER_OBJECT_FASTIODISPATCH], 4, &fastio_addr))
+                {
+                    PRINT_DEBUG("[ROOTKITMON] Failed to read DRIVER_OBJECT_FASTIODISPATCH pointer\n");
+                    throw -1;
+                }
+                if (fastio_addr)
+                    drv_obj_crc = merge(drv_obj_crc, calc_checksum(vmi, fastio_addr, this->fastio_size));
+                this->driver_object_checksums[drv_object] = drv_obj_crc;
                 this->driver_stacks[drv_object] = this->enumerate_driver_stacks(vmi, drv_object);
             }
     }
@@ -815,7 +824,7 @@ device_stack_t rootkitmon::enumerate_driver_stacks(vmi_instance_t vmi, addr_t dr
 
 rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output)
     : pluginex(drakvuf, output), format(output), offsets(new size_t[__OFFSET_MAX]),
-      done_final_analysis(false), not_supported(false)
+      done_final_analysis(false)
 {
     if (drakvuf_get_page_mode(drakvuf) != VMI_PM_IA32E)
     {
@@ -838,22 +847,14 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
     }
 
     if (!config->fwpkclnt_profile)
-    {
         PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");
-    }
     else
-    {
         manual_hooks.push_back(register_profile_hook(drakvuf, config->fwpkclnt_profile, "fwpkclnt.sys", "FwpmCalloutAdd0", wfp_cb));
-    }
 
     if (!config->fltmgr_profile)
-    {
         PRINT_DEBUG("[ROOTKITMON] No profile for fltmgr.sys was given!\n");
-    }
     else
-    {
         manual_hooks.push_back(register_profile_hook(drakvuf, config->fltmgr_profile, "fltmgr.sys", "FltRegisterFilter", flt_cb));
-    }
 
     if (!drakvuf_get_kernel_struct_members_array_rva(drakvuf, offset_names, __OFFSET_MAX, this->offsets))
     {
@@ -873,9 +874,10 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
     }
     manual_hooks.push_back(register_mem_hook(halprivatetable_overwrite_cb, this->halprivatetable, VMI_MEMACCESS_W));
 
-    if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size))
+    if (!drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_HEADER", &this->object_header_size) ||
+        !drakvuf_get_kernel_struct_size(drakvuf, "_FAST_IO_DISPATCH", &this->fastio_size) ||
+        !drakvuf_get_kernel_struct_size(drakvuf, "_OBJECT_TYPE_INITIALIZER", &this->ob_type_init_size))
     {
-        PRINT_DEBUG("[ROOTKITMON] Failed to get _OBJECT_HEADER struct size\n");
         throw -1;
     }
 
@@ -892,14 +894,25 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
     }
 
     if (!this->is32bit)
+    {
         for (const auto& drv_object : enumerate_driver_objects(vmi))
         {
-            auto address = drv_object + offsets[DRIVER_OBJECT_STARTIO];
             // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
-            driver_object_checksums[drv_object] = calc_checksum(vmi, address, this->guest_ptr_size * 30);
+            auto drv_obj_crc = calc_checksum(vmi, drv_object + offsets[DRIVER_OBJECT_STARTIO], this->guest_ptr_size * 30);
+            // Calculate FASTIO_DISPATCH array as well if present
+            addr_t fastio_addr = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, drv_object + offsets[DRIVER_OBJECT_FASTIODISPATCH], 4, &fastio_addr))
+            {
+                PRINT_DEBUG("[ROOTKITMON] Failed to read DRIVER_OBJECT_FASTIODISPATCH pointer\n");
+                throw -1;
+            }
+            if (fastio_addr)
+                drv_obj_crc = merge(drv_obj_crc, calc_checksum(vmi, fastio_addr, this->fastio_size));
+            driver_object_checksums[drv_object] = drv_obj_crc;
             // Enumerate all device_stacks of a particular driver
             driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
         }
+    }
 
     // Enumerate descriptors on all cores
     if (!enumerate_cores(vmi))
@@ -907,7 +920,6 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
         PRINT_DEBUG("[ROOTKITMON] Failed to enumerate descriptors\n");
         throw -1;
     }
-    PRINT_DEBUG("[ROOTKITMON] Done init\n");
 }
 
 rootkitmon::~rootkitmon()

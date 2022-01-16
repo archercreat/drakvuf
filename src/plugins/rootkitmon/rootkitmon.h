@@ -148,14 +148,16 @@ public:
     size_t object_header_size;
 
     bool done_final_analysis;
-    bool not_supported;
 
     addr_t halprivatetable;
     addr_t type_idx_table;
+    size_t fastio_size;
+    size_t ob_type_init_size;
     uint8_t ob_header_cookie;
 
     std::unordered_map<driver_t, sha256_checksum_t> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
+    std::unordered_map<addr_t, sha256_checksum_t> ob_type_initiliazer_crc;
     // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
     std::unordered_map<driver_t, device_stack_t> driver_stacks;
     // VCPU -> Descriptor

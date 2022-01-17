@@ -110,6 +110,7 @@ struct rootkitmon_config
 {
     const char* fwpkclnt_profile;
     const char* fltmgr_profile;
+    const char* ci_profile;
 };
 
 class rootkitmon : public pluginex
@@ -137,6 +138,7 @@ public:
     void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
     void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
     void check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+    void check_ci(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
 
     virtual bool stop_impl() override;
 
@@ -146,15 +148,21 @@ public:
     size_t* offsets;
     size_t guest_ptr_size;
     bool is32bit;
-    size_t object_header_size;
 
     bool done_final_analysis;
 
     addr_t halprivatetable;
-    addr_t type_idx_table;
     size_t fastio_size;
+    // Object integrity
+    size_t object_header_size;
+    addr_t type_idx_table;
     size_t ob_type_init_size;
     uint8_t ob_header_cookie;
+    // Code integrity
+    uint8_t ci_enabled;
+    sha256_checksum_t ci_callbacks;
+    addr_t ci_enabled_va;
+    addr_t ci_callbacks_va;
 
     std::unordered_map<driver_t, sha256_checksum_t> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;

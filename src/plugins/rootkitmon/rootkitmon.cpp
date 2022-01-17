@@ -109,6 +109,22 @@
 #include "rootkitmon.h"
 #include "private.h"
 
+static constexpr uint16_t vista_rtm_ver = 6000;
+static constexpr uint16_t win7_sp1_ver = 7601;
+static constexpr uint16_t win8_rtm_ver = 9200;
+
+static inline size_t get_ci_table_size(vmi_instance_t vmi)
+{
+    // Table size is heavily dependent on build version but for win 8.1 and
+    // higher we just assume table size is 30 elements long
+    uint16_t ver = vmi_get_win_buildnumber(vmi);
+    if (ver >= vista_rtm_ver && ver <= win7_sp1_ver)
+        return 3;
+    else if (ver >= win8_rtm_ver)
+        return 30;
+    return 0;
+}
+
 static bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr)
 {
     addr_t temp_va;
@@ -436,7 +452,6 @@ void rootkitmon::check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* in
                 if (VMI_SUCCESS != vmi_read_addr_va(vmi, drv_object + this->offsets[DRIVER_OBJECT_FASTIODISPATCH], 4, &fastio_addr))
                 {
                     PRINT_DEBUG("[ROOTKITMON] Failed to read DRIVER_OBJECT_FASTIODISPATCH pointer\n");
-                    throw -1;
                 }
                 if (fastio_addr)
                     drv_obj_crc = merge(drv_obj_crc, calc_checksum(vmi, fastio_addr, this->fastio_size));
@@ -569,6 +584,7 @@ void rootkitmon::check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
         }
     }
 }
+
 void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
     vmi_lock_guard vmi(drakvuf);
@@ -576,7 +592,10 @@ void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     {
         addr_t ob_type;
         if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
-            throw -1;
+        {
+            PRINT_DEBUG("[ROOTKITMON] Invalid object type pointer. Should never happen\n");
+            continue;
+        }
 
         if (!ob_type)
             break;
@@ -589,6 +608,34 @@ void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
         }
     }
 }
+
+void rootkitmon::check_ci(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    vmi_lock_guard vmi(drakvuf);
+
+    if (!this->ci_enabled_va || !this->ci_callbacks_va)
+        return;
+
+    uint8_t ci_flag;
+    if (VMI_SUCCESS != vmi_read_8_va(vmi, this->ci_enabled_va, 4, &ci_flag))
+    {
+        PRINT_DEBUG("[ROOTKITMON] Failed to read g_CiEnabled\n");
+        return;
+    }
+
+    if (this->ci_enabled != ci_flag)
+    {
+        fmt::print(this->format, "rootkitmon", drakvuf, info,
+            keyval("Reason", fmt::Qstr("g_CiEnabled modification")));
+    }
+
+    if (this->ci_callbacks != calc_checksum(vmi, this->ci_callbacks_va, get_ci_table_size(vmi)))
+    {
+        fmt::print(this->format, "rootkitmon", drakvuf, info,
+            keyval("Reason", fmt::Qstr("g_CiCallbacks modification")));
+    }
+}
+
 /**
  * This trap is used to make final analysis.
 */
@@ -603,6 +650,7 @@ event_response_t rootkitmon::final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info
         check_driver_objects(drakvuf, info);
         check_descriptors(drakvuf, info);
         check_objects(drakvuf, info);
+        check_ci(drakvuf, info);
 
         done_final_analysis = true;
     }
@@ -842,6 +890,78 @@ device_stack_t rootkitmon::enumerate_driver_stacks(vmi_instance_t vmi, addr_t dr
     return stacks;
 }
 
+static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto plugin = GetTrapPlugin<rootkitmon>(info);
+    plugin->check_ci(drakvuf, info);
+    return VMI_EVENT_RESPONSE_NONE;
+}
+
+static void initialize_ci_checks(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
+{
+    vmi_lock_guard vmi(drakvuf);
+
+    plugin->ci_callbacks_va = 0;
+    plugin->ci_enabled_va = 0;
+
+    if (vmi_get_win_buildnumber(vmi) <= win8_rtm_ver)
+    {
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &plugin->ci_enabled_va) ||
+            VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &plugin->ci_callbacks_va))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
+            throw -1;
+        }
+    }
+    else
+    {
+        // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located inside ci.dll module
+        if (!config->ci_profile)
+        {
+            PRINT_DEBUG("[ROOTKITMON] No ci.dll profile\n");
+            return;
+        }
+        // Extract g_CiOptions rva from json file
+        auto profile_json = json_object_from_file(config->ci_profile);
+        if (!profile_json)
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to load JSON debug info for ci.dll\n");
+            throw -1;
+        }
+        addr_t ci_options_rva;
+        if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find g_CiOptions RVA in json for ci.dll\n");
+            throw -1;
+        }
+        json_object_put(profile_json);
+
+        addr_t list_head;
+        if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
+            throw -1;
+
+        addr_t ci_module_base;
+        if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find ci.dll\n");
+            throw -1;
+        }
+        plugin->ci_enabled_va = ci_module_base + ci_options_rva;
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &plugin->ci_callbacks_va))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find SeCiCallbacks\n");
+            throw -1;
+        }
+    }
+    // Fill initial values
+    vmi_read_8_va(vmi, plugin->ci_enabled_va, 4, &plugin->ci_enabled);
+    plugin->ci_callbacks = calc_checksum(vmi, plugin->ci_callbacks_va, get_ci_table_size(vmi));
+
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
+}
+
+
 rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output)
     : pluginex(drakvuf, output), format(output), offsets(new size_t[__OFFSET_MAX]),
       done_final_analysis(false)
@@ -865,6 +985,8 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
 
         this->winver = build_info.version;
     }
+
+    initialize_ci_checks(drakvuf, this, config);
 
     if (!config->fwpkclnt_profile)
         PRINT_DEBUG("[ROOTKITMON] No profile for fwpkclnt.sys was given!\n");

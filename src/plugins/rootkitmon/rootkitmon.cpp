@@ -127,7 +127,7 @@ static inline size_t get_ci_table_size(vmi_instance_t vmi)
 
 static inline void report(drakvuf_t drakvuf, const output_format_t format, const char* type, const char* name, const char* action)
 {
-    fmt::print(format, "rootkitmon", drakvuf, nullptr, 
+    fmt::print(format, "rootkitmon", drakvuf, nullptr,
         keyval("Type", fmt::Qstr(type)),
         keyval("Name", fmt::Qstr(name)),
         keyval("Action", fmt::Qstr(action)));
@@ -160,7 +160,7 @@ static uint64_t align_by_page(uint64_t value)
 
 static sha256_checksum_t& merge(sha256_checksum_t& s1, const sha256_checksum_t& s2)
 {
-    for (int i = 0; i < s1.size(); i++)
+    for (size_t i = 0; i < s1.size(); i++)
         s1[i] ^= s2[i];
     return s1;
 }

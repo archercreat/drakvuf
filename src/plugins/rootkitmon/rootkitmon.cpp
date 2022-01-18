@@ -400,7 +400,7 @@ static void initialize_ob_checks(vmi_instance_t vmi, rootkitmon* plugin)
         //   BOOLEAN AllowMultipleCallbacks;
         //   UCHAR reserved[3];
         // } CALLBACK_OBJECT, *PCALLBACK_OBJECT;
-        constexpr addr_t callbacks_off = 0x10;
+        const addr_t callbacks_off = plugin->guest_ptr_size * 2;
         // typedef struct _CALLBACK_REGISTRATION <- undocumented
         // {
         //   LIST_ENTRY Link;                       // 0x00
@@ -410,7 +410,7 @@ static void initialize_ob_checks(vmi_instance_t vmi, rootkitmon* plugin)
         //   ULONG Busy;
         //   BOOLEAN UnregisterWaiting;
         // } CALLBACK_REGISTRATION, *PCALLBACK_REGISTRATION;
-        constexpr addr_t callback_fn_off = 0x18;
+        const addr_t callback_fn_off = plugin->guest_ptr_size * 3;
         // Read list head
         addr_t head{ 0 };
         if (VMI_SUCCESS != vmi_read_addr_va(vmi, object + callbacks_off, 4, & head))

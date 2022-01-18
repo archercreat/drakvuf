@@ -125,6 +125,14 @@ static inline size_t get_ci_table_size(vmi_instance_t vmi)
     return 0;
 }
 
+static inline void report(drakvuf_t drakvuf, const output_format_t format, const char* type, const char* name, const char* action)
+{
+    fmt::print(format, "rootkitmon", nullptr, 
+        keyval("Type", fmt::Qstr(type)),
+        keyval("Name", fmt::Qstr(name)),
+        keyval("Action", fmt::Qstr(action)));
+}
+
 static bool translate_ksym2p(vmi_instance_t vmi, const char* symbol, addr_t* addr)
 {
     addr_t temp_va;
@@ -308,6 +316,142 @@ static event_response_t halprivatetable_overwrite_cb(drakvuf_t drakvuf, drakvuf_
     return VMI_EVENT_RESPONSE_NONE;
 }
 
+static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    auto plugin = GetTrapPlugin<rootkitmon>(info);
+    plugin->check_ci(drakvuf, info);
+    return VMI_EVENT_RESPONSE_NONE;
+}
+
+static void initialize_ci_checks(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
+{
+    vmi_lock_guard vmi(drakvuf);
+
+    plugin->ci_callbacks_va = 0;
+    plugin->ci_enabled_va = 0;
+
+    if (vmi_get_win_buildnumber(vmi) <= win8_rtm_ver)
+    {
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &plugin->ci_enabled_va) ||
+            VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &plugin->ci_callbacks_va))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
+            throw -1;
+        }
+    }
+    else
+    {
+        // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located inside ci.dll module
+        if (!config->ci_profile)
+        {
+            PRINT_DEBUG("[ROOTKITMON] No ci.dll profile\n");
+            return;
+        }
+        // Extract g_CiOptions rva from json file
+        auto profile_json = json_object_from_file(config->ci_profile);
+        if (!profile_json)
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to load JSON debug info for ci.dll\n");
+            throw -1;
+        }
+        addr_t ci_options_rva;
+        if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find g_CiOptions RVA in json for ci.dll\n");
+            throw -1;
+        }
+        json_object_put(profile_json);
+
+        addr_t list_head;
+        if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
+            throw -1;
+
+        addr_t ci_module_base;
+        if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find ci.dll\n");
+            throw -1;
+        }
+        plugin->ci_enabled_va = ci_module_base + ci_options_rva;
+        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &plugin->ci_callbacks_va))
+        {
+            PRINT_DEBUG("[ROOTKITMON] Failed to find SeCiCallbacks\n");
+            throw -1;
+        }
+    }
+    // Fill initial values
+    vmi_read_8_va(vmi, plugin->ci_enabled_va, 4, &plugin->ci_enabled);
+    plugin->ci_callbacks = calc_checksum(vmi, plugin->ci_callbacks_va, get_ci_table_size(vmi));
+
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
+    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
+}
+
+static void initialize_ob_checks(vmi_instance_t vmi, rootkitmon* plugin)
+{
+    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObpInfoMaskToOffset", &plugin->ob_infomask2off))
+        throw -1;
+
+    auto consume_callbacks = [&](addr_t object) -> std::vector<addr_t>
+    {
+        std::vector<addr_t> out;
+        // typedef struct _CALLBACK_OBJECT <- undocumented
+        // {
+        //   ULONG Signature;                   // 0x00
+        //   KSPIN_LOCK Lock;                   // 0x08
+        //   LIST_ENTRY RegisteredCallbacks;    // 0x10
+        //   BOOLEAN AllowMultipleCallbacks;
+        //   UCHAR reserved[3];
+        // } CALLBACK_OBJECT, *PCALLBACK_OBJECT;
+        constexpr addr_t callbacks_off = 0x10;
+        // typedef struct _CALLBACK_REGISTRATION <- undocumented
+        // {
+        //   LIST_ENTRY Link;                       // 0x00
+        //   PCALLBACK_OBJECT CallbackObject;       // 0x10
+        //   PCALLBACK_FUNCTION CallbackFunction;   // 0x18
+        //   PVOID CallbackContext;
+        //   ULONG Busy;
+        //   BOOLEAN UnregisterWaiting;
+        // } CALLBACK_REGISTRATION, *PCALLBACK_REGISTRATION;
+        constexpr addr_t callback_fn_off = 0x18;
+        // Read list head
+        addr_t head{ 0 };
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, object + callbacks_off, 4, & head))
+            return out;
+        // Read flink entry
+        addr_t entry{ 0 };
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, head, 4, &entry))
+            return out;
+        while (entry != head && entry)
+        {
+            addr_t callback{ 0 };
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, entry + callback_fn_off, 4, &callback) ||
+                VMI_SUCCESS != vmi_read_addr_va(vmi, entry, 4, &entry))
+                return out;
+            if (callback) out.push_back(callback);
+        }
+        return out;
+    };
+
+    for (const auto& callback_object : plugin->enumerate_object_directory(vmi, "Callback"))
+    {
+        plugin->ob_callbacks[callback_object] = consume_callbacks(callback_object);
+    }
+
+    // Enumerate every object type
+    for (size_t i = 2; ; i++)
+    {
+        addr_t ob_type{ 0 };
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
+            continue;
+        // if reached the end
+        if (!ob_type)
+            break;
+        // CRC whole _OBJECT_TYPE_INITIALIZER structure
+        this->ob_type_initiliazer_crc[i] = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
+    }
+}
+
 bool rootkitmon::enumerate_cores(vmi_instance_t vmi)
 {
     for (size_t vcpu = 0; vcpu < vmi_get_num_vcpus(vmi); vcpu++)
@@ -445,7 +589,7 @@ void rootkitmon::check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* in
     {
         vmi_lock_guard vmi(drakvuf);
         if (!this->is32bit)
-            for (const auto& drv_object : this->enumerate_driver_objects(vmi))
+            for (const auto& drv_object : this->enumerate_object_directory(vmi, "Driver"))
             {
                 auto drv_obj_crc = calc_checksum(vmi, drv_object + this->offsets[DRIVER_OBJECT_STARTIO], this->guest_ptr_size * 30);
                 addr_t fastio_addr = 0;
@@ -587,7 +731,34 @@ void rootkitmon::check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 
 void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 {
+    auto p_ob_type_initializer_crc = std::move(this->ob_type_initiliazer_crc);
+    auto p_ob_callbacks = std::move(this->ob_callbacks);
+    this->ob_type_initiliazer_crc.clear();
+    this->ob_callbacks.clear();
+
     vmi_lock_guard vmi(drakvuf);
+    initialize_ob_checks(vmi, this);
+    auto compare_callbacks = [&](const auto& previous, const auto& current)
+    {
+        for (const auto& [ob, cbs] : previous)
+        {
+            if (current.find(ob) == current.end())
+            {
+                auto obj_name = get_object_name(vmi, ob);
+                // Consider added
+                for (auto& cb : cbs)
+                    report(drakvuf, format, "ObjectCallback", obj_name ? obj_name : "", "Added");
+            }
+            else
+            {
+                
+            }
+        }
+    };
+
+    compare_callbacks(p_ob_callbacks, this->ob_callbacks);
+    compare_callbacks(this->ob_callbacks, p_ob_callbacks);
+    // Check type initializer
     for (size_t i = 2; ; i++)
     {
         addr_t ob_type;
@@ -731,32 +902,6 @@ std::unique_ptr<libhook::ManualHook> rootkitmon::register_mem_hook(hook_cb_t cal
     }
 }
 
-std::unique_ptr<libhook::ManualHook> rootkitmon::register_reg_hook(hook_cb_t callback, register_t reg)
-{
-    auto trap = new drakvuf_trap_t();
-    trap->type = REGISTER;
-    trap->reg = reg;
-    trap->data = (void*)this;
-    trap->ah_cb = nullptr;
-    trap->name = nullptr;
-    trap->cb = callback;
-    trap->ttl = UNLIMITED_TTL;
-
-    auto hook = createManualHook(trap, [](drakvuf_trap_t* trap_)
-    {
-        delete trap_;
-    });
-    if (!hook)
-    {
-        PRINT_DEBUG("[ROOTKITMON] Failed to hook register\n");
-        throw -1;
-    }
-    else
-    {
-        return hook;
-    }
-}
-
 unicode_string_t* rootkitmon::get_object_type_name(vmi_instance_t vmi, addr_t object)
 {
     addr_t ob_header = object - this->object_header_size + this->guest_ptr_size;
@@ -779,49 +924,27 @@ unicode_string_t* rootkitmon::get_object_type_name(vmi_instance_t vmi, addr_t ob
     return drakvuf_read_unicode_va(vmi, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
 }
 
-
-std::set<driver_t> rootkitmon::enumerate_directory(vmi_instance_t vmi, addr_t directory)
+unicode_string_t* rootkitmon::get_object_name(vmi_instance_t vmi, addr_t object)
 {
-    std::set<driver_t> out;
-
-    // There is only 37 _OBJECT_DIRECTORY_ENTRY entries in object directory:
-    // 0: kd> dt nt!_OBJECT_DIRECTORY
-    //    +0x000 HashBuckets      : [37] Ptr64 _OBJECT_DIRECTORY_ENTRY
-    //    +0x128 Lock             : _EX_PUSH_LOCK
-    //    ...
-    for (int i = 0; i < 37; i++)
+    // Get object header
+    addr_t object_header = object - this->object_header_size + this->guest_ptr_size;
+    // Get InfoMask
+    uint8_t infomask{ 0 };
+    if (vmi_read_8_va(vmi, object_header + this->offsets[OBJECT_HEADER_INFOMASK], 4, &infomask))
+        throw -1;
+    // Get object name. Some objects are anonymous. See ObQueryNameInfo for more info
+    if (infomask & 2)
     {
-        addr_t hashbucket = 0;
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, directory + this->guest_ptr_size * i, 4, &hashbucket) || !hashbucket)
-            continue;
-
-        while (true)
-        {
-            addr_t object = 0;
-            if (VMI_SUCCESS != vmi_read_addr_va(vmi, hashbucket + this->offsets[OBJECT_DIRECTORY_ENTRY_OBJECT], 4, &object) || !object)
-                break;
-
-            unicode_string_t* obj_name = get_object_type_name(vmi, object);
-            if (obj_name)
-            {
-                if (!strcmp((const char*)obj_name->contents, "Driver"))
-                    out.insert(object);
-
-                if (!strcmp((const char*)obj_name->contents, "Directory"))
-                    for (auto obj : enumerate_directory(vmi, object))
-                        out.insert(obj);
-
-                vmi_free_unicode_str(obj_name);
-            }
-
-            if (VMI_SUCCESS != vmi_read_addr_va(vmi, hashbucket + this->offsets[OBJECT_DIRECTORY_ENTRY_CHAINLINK], 4, &hashbucket) || !hashbucket)
-                break;
-        }
+        uint8_t name_info_off{ 0 };
+        if (VMI_SUCCESS != vmi_read_8_va(vmi, this->ob_infomask2off + (infomask & 3), 4, &name_info_off))
+            throw -1;
+        addr_t object_name_info = object_header - name_info_off;
+        return drakvuf_read_unicode_va(vmi, object_name_info + this->offsets[OBJECT_HEADER_NAME_INFO_NAME], 4);
     }
-    return out;
+    return nullptr;
 }
 
-std::set<driver_t> rootkitmon::enumerate_driver_objects(vmi_instance_t vmi)
+std::set<addr_t> rootkitmon::enumerate_object_directory(vmi_instance_t vmi, const char* name)
 {
     // Get root directory object VA
     addr_t root_directory_object;
@@ -831,10 +954,50 @@ std::set<driver_t> rootkitmon::enumerate_driver_objects(vmi_instance_t vmi)
         throw -1;
     }
 
-    // Enumerate directories recursively
-    return enumerate_directory(vmi, root_directory_object);
-}
+    std::function<std::set<addr_t>(vmi_instance_t vmi, addr_t directory, const char* name)> enumerate_directory;
+    enumerate_directory = [&](vmi_instance_t vmi, addr_t directory, const char* name)
+    {
+        std::set<addr_t> out;
+        // There is only 37 _OBJECT_DIRECTORY_ENTRY entries in object directory:
+        // 0: kd> dt nt!_OBJECT_DIRECTORY
+        //    +0x000 HashBuckets      : [37] Ptr64 _OBJECT_DIRECTORY_ENTRY
+        //    +0x128 Lock             : _EX_PUSH_LOCK
+        //    ...
+        for (int i = 0; i < 37; i++)
+        {
+            addr_t hashbucket = 0;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, directory + this->guest_ptr_size * i, 4, &hashbucket) || !hashbucket)
+                continue;
 
+            while (true)
+            {
+                addr_t object = 0;
+                if (VMI_SUCCESS != vmi_read_addr_va(vmi, hashbucket + this->offsets[OBJECT_DIRECTORY_ENTRY_OBJECT], 4, &object) || !object)
+                    break;
+
+                unicode_string_t* obj_name = get_object_type_name(vmi, object);
+                if (obj_name)
+                {
+                    if (!strcmp((const char*)obj_name->contents, name))
+                        out.insert(object);
+
+                    if (!strcmp((const char*)obj_name->contents, "Directory"))
+                        for (auto obj : enumerate_directory(vmi, object, name))
+                            out.insert(obj);
+
+                    vmi_free_unicode_str(obj_name);
+                }
+
+                if (VMI_SUCCESS != vmi_read_addr_va(vmi, hashbucket + this->offsets[OBJECT_DIRECTORY_ENTRY_CHAINLINK], 4, &hashbucket) || !hashbucket)
+                    break;
+            }
+        }
+        return out;
+    };
+
+    // Enumerate directories recursively
+    return enumerate_directory(vmi, root_directory_object, name);
+}
 
 /**
  * Every driver can have N number of devices. Every device can be attached to a different device of a different driver,
@@ -890,78 +1053,6 @@ device_stack_t rootkitmon::enumerate_driver_stacks(vmi_instance_t vmi, addr_t dr
     return stacks;
 }
 
-static event_response_t check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
-{
-    auto plugin = GetTrapPlugin<rootkitmon>(info);
-    plugin->check_ci(drakvuf, info);
-    return VMI_EVENT_RESPONSE_NONE;
-}
-
-static void initialize_ci_checks(drakvuf_t drakvuf, rootkitmon* plugin, const rootkitmon_config* config)
-{
-    vmi_lock_guard vmi(drakvuf);
-
-    plugin->ci_callbacks_va = 0;
-    plugin->ci_enabled_va = 0;
-
-    if (vmi_get_win_buildnumber(vmi) <= win8_rtm_ver)
-    {
-        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiEnabled",   &plugin->ci_enabled_va) ||
-            VMI_SUCCESS != vmi_translate_ksym2v(vmi, "g_CiCallbacks", &plugin->ci_callbacks_va))
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to initialize g_CiEnabled or g_CiCallbacks\n");
-            throw -1;
-        }
-    }
-    else
-    {
-        // On win 8.1 and higher the `g_CiOptions` aka `g_CiEnabled` is located inside ci.dll module
-        if (!config->ci_profile)
-        {
-            PRINT_DEBUG("[ROOTKITMON] No ci.dll profile\n");
-            return;
-        }
-        // Extract g_CiOptions rva from json file
-        auto profile_json = json_object_from_file(config->ci_profile);
-        if (!profile_json)
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to load JSON debug info for ci.dll\n");
-            throw -1;
-        }
-        addr_t ci_options_rva;
-        if (!json_get_symbol_rva(drakvuf, profile_json, "g_CiOptions", &ci_options_rva))
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to find g_CiOptions RVA in json for ci.dll\n");
-            throw -1;
-        }
-        json_object_put(profile_json);
-
-        addr_t list_head;
-        if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head))
-            throw -1;
-
-        addr_t ci_module_base;
-        if (!drakvuf_get_module_base_addr(drakvuf, list_head, "ci.dll", &ci_module_base))
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to find ci.dll\n");
-            throw -1;
-        }
-        plugin->ci_enabled_va = ci_module_base + ci_options_rva;
-        if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "SeCiCallbacks", &plugin->ci_callbacks_va))
-        {
-            PRINT_DEBUG("[ROOTKITMON] Failed to find SeCiCallbacks\n");
-            throw -1;
-        }
-    }
-    // Fill initial values
-    vmi_read_8_va(vmi, plugin->ci_enabled_va, 4, &plugin->ci_enabled);
-    plugin->ci_callbacks = calc_checksum(vmi, plugin->ci_callbacks_va, get_ci_table_size(vmi));
-
-    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageHeader", check_cb));
-    plugin->syscall_hooks.push_back(plugin->createSyscallHook("SeValidateImageData", check_cb));
-}
-
-
 rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, output_format_t output)
     : pluginex(drakvuf, output), format(output), offsets(new size_t[__OFFSET_MAX]),
       done_final_analysis(false)
@@ -1008,6 +1099,8 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
 
     vmi_lock_guard vmi(drakvuf);
 
+    initialize_ob_checks(vmi, this);
+
     // Hook HalPrivateDispatchTable on write
     if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
     {
@@ -1037,7 +1130,7 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
 
     if (!this->is32bit)
     {
-        for (const auto& drv_object : enumerate_driver_objects(vmi))
+        for (const auto& drv_object : enumerate_object_directory(vmi, "Driver"))
         {
             // 28 Major functions + DriverUnload + DriverStartIo = 30 pointers
             auto drv_obj_crc = calc_checksum(vmi, drv_object + offsets[DRIVER_OBJECT_STARTIO], this->guest_ptr_size * 30);
@@ -1054,21 +1147,6 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
             // Enumerate all device_stacks of a particular driver
             driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
         }
-    }
-
-    // Enumerate every object type
-    for (size_t i = 2; ; i++)
-    {
-        addr_t ob_type;
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
-            throw -1;
-
-        // if reached the end
-        if (!ob_type)
-            break;
-
-        // CRC whole _OBJECT_TYPE_INITIALIZER structure
-        this->ob_type_initiliazer_crc[i] = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
     }
 
     // Enumerate descriptors on all cores

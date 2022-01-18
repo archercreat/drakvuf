@@ -125,12 +125,11 @@ public:
 
     std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,
         const char* func_name, hook_cb_t callback);
-    std::unique_ptr<libhook::ManualHook> register_reg_hook(hook_cb_t callback, register_t reg);
     std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa, vmi_mem_access_t access);
 
-    std::set<driver_t> enumerate_driver_objects(vmi_instance_t vmi);
-    std::set<driver_t> enumerate_directory(vmi_instance_t vmi, addr_t addr);
+    std::set<driver_t> enumerate_object_directory(vmi_instance_t vmi, const char* name);
     unicode_string_t* get_object_type_name(vmi_instance_t vmi, addr_t object);
+    unicode_string_t* get_object_name(vmi_instance_t vmi, addr_t object);
     device_stack_t enumerate_driver_stacks(vmi_instance_t vmi, addr_t driver_object);
     bool enumerate_cores(vmi_instance_t vmi);
 
@@ -158,6 +157,7 @@ public:
     addr_t type_idx_table;
     size_t ob_type_init_size;
     uint8_t ob_header_cookie;
+    addr_t ob_infomask2off;
     // Code integrity
     uint8_t ci_enabled;
     sha256_checksum_t ci_callbacks;
@@ -167,6 +167,7 @@ public:
     std::unordered_map<driver_t, sha256_checksum_t> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
     std::unordered_map<addr_t, sha256_checksum_t> ob_type_initiliazer_crc;
+    std::unordered_map<addr_t, std::vector<addr_t>> ob_callbacks;
     // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
     std::unordered_map<driver_t, device_stack_t> driver_stacks;
     // VCPU -> Descriptor

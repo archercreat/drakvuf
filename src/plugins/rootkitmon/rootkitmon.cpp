@@ -127,7 +127,7 @@ static inline size_t get_ci_table_size(vmi_instance_t vmi)
 
 static inline void report(drakvuf_t drakvuf, const output_format_t format, const char* type, const char* name, const char* action)
 {
-    fmt::print(format, "rootkitmon", nullptr, 
+    fmt::print(format, "rootkitmon", drakvuf, nullptr, 
         keyval("Type", fmt::Qstr(type)),
         keyval("Name", fmt::Qstr(name)),
         keyval("Action", fmt::Qstr(action)));
@@ -389,9 +389,6 @@ static void initialize_ci_checks(drakvuf_t drakvuf, rootkitmon* plugin, const ro
 
 static void initialize_ob_checks(vmi_instance_t vmi, rootkitmon* plugin)
 {
-    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObpInfoMaskToOffset", &plugin->ob_infomask2off))
-        throw -1;
-
     auto consume_callbacks = [&](addr_t object) -> std::vector<addr_t>
     {
         std::vector<addr_t> out;
@@ -438,17 +435,17 @@ static void initialize_ob_checks(vmi_instance_t vmi, rootkitmon* plugin)
         plugin->ob_callbacks[callback_object] = consume_callbacks(callback_object);
     }
 
-    // Enumerate every object type
+    // Enumerate every object type. First 2 entries are not used
     for (size_t i = 2; ; i++)
     {
         addr_t ob_type{ 0 };
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, plugin->type_idx_table + i * plugin->guest_ptr_size, 4, &ob_type))
             continue;
         // if reached the end
         if (!ob_type)
             break;
         // CRC whole _OBJECT_TYPE_INITIALIZER structure
-        this->ob_type_initiliazer_crc[i] = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
+        plugin->ob_type_initiliazer_crc[i] = calc_checksum(vmi, ob_type + plugin->offsets[OBJECT_TYPE_TYPE_INFO], plugin->ob_type_init_size);
     }
 }
 
@@ -738,44 +735,50 @@ void rootkitmon::check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 
     vmi_lock_guard vmi(drakvuf);
     initialize_ob_checks(vmi, this);
-    auto compare_callbacks = [&](const auto& previous, const auto& current)
+
+    auto compare_callbacks = [&](const auto& previous, const auto& current, const char* action)
     {
-        for (const auto& [ob, cbs] : previous)
+        for (const auto& [ob, prev_cbs] : previous)
         {
+            auto obj_name = get_object_name(vmi, ob);
+            const char* name = obj_name ? (const char*)obj_name->contents : "";
             if (current.find(ob) == current.end())
             {
-                auto obj_name = get_object_name(vmi, ob);
-                // Consider added
-                for (auto& cb : cbs)
-                    report(drakvuf, format, "ObjectCallback", obj_name ? obj_name : "", "Added");
+                report(drakvuf, format, "ObjectCallbacks", name, action);
             }
             else
             {
-                
+                const auto& cur_cbs = current.at(ob);
+                for (const auto& cb : prev_cbs)
+                {
+                    if (std::find(cur_cbs.begin(), cur_cbs.end(), cb) == cur_cbs.end())
+                    {
+                        report(drakvuf, format, "ObjectCallbacks", name, action);
+                        break;
+                    }
+                }
             }
+            if (obj_name) vmi_free_unicode_str(obj_name);
         }
     };
-
-    compare_callbacks(p_ob_callbacks, this->ob_callbacks);
-    compare_callbacks(this->ob_callbacks, p_ob_callbacks);
+    compare_callbacks(p_ob_callbacks, this->ob_callbacks, "Removed");
+    compare_callbacks(this->ob_callbacks, p_ob_callbacks, "Added");
     // Check type initializer
-    for (size_t i = 2; ; i++)
+    for (const auto& [idx, crc] : p_ob_type_initializer_crc)
     {
-        addr_t ob_type;
-        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + i * this->guest_ptr_size, 4, &ob_type))
-        {
-            PRINT_DEBUG("[ROOTKITMON] Invalid object type pointer. Should never happen\n");
+        // Should never happen but better safe than sorry
+        if (this->ob_type_initiliazer_crc.find(idx) == this->ob_type_initiliazer_crc.end())
             continue;
-        }
-
-        if (!ob_type)
-            break;
+        addr_t ob_type;
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, this->type_idx_table + idx * this->guest_ptr_size, 4, &ob_type))
+            continue;
 
         const auto& ob_ty_init_crc = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
-        if (this->ob_type_initiliazer_crc[i] != ob_ty_init_crc)
+        if (this->ob_type_initiliazer_crc[idx] != ob_ty_init_crc)
         {
-            fmt::print(this->format, "rootkitmon", drakvuf, info,
-                keyval("Reason", fmt::Qstr("Object type initializer modification")));
+            auto type_name = drakvuf_read_unicode_va(vmi, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
+            report(drakvuf, format, "ObjectType", type_name ? (const char*)type_name->contents : "", "Modified");
+            if (type_name) vmi_free_unicode_str(type_name);
         }
     }
 }
@@ -1099,8 +1102,6 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
 
     vmi_lock_guard vmi(drakvuf);
 
-    initialize_ob_checks(vmi, this);
-
     // Hook HalPrivateDispatchTable on write
     if (!translate_ksym2p(vmi, "HalPrivateDispatchTable", &(this->halprivatetable)))
     {
@@ -1116,9 +1117,9 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
         throw -1;
     }
 
-    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
+    if (VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObpInfoMaskToOffset", &this->ob_infomask2off) ||
+        VMI_SUCCESS != vmi_translate_ksym2v(vmi, "ObTypeIndexTable", &this->type_idx_table))
     {
-        PRINT_DEBUG("[ROOTKITMON] Failed to translate ObTypeIndexTable to VA\n");
         throw -1;
     }
 
@@ -1148,6 +1149,8 @@ rootkitmon::rootkitmon(drakvuf_t drakvuf, const rootkitmon_config* config, outpu
             driver_stacks[drv_object] = enumerate_driver_stacks(vmi, drv_object);
         }
     }
+
+    initialize_ob_checks(vmi, this);
 
     // Enumerate descriptors on all cores
     if (!enumerate_cores(vmi))

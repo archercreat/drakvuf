@@ -121,8 +121,6 @@ public:
     rootkitmon& operator=(const rootkitmon&) = delete;
     ~rootkitmon();
 
-    event_response_t final_check_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-
     std::unique_ptr<libhook::ManualHook> register_profile_hook(drakvuf_t drakvuf, const char* profile, const char* dll_name,
         const char* func_name, hook_cb_t callback);
     std::unique_ptr<libhook::ManualHook> register_mem_hook(hook_cb_t callback, addr_t pa, vmi_mem_access_t access);
@@ -133,10 +131,10 @@ public:
     device_stack_t enumerate_driver_stacks(vmi_instance_t vmi, addr_t driver_object);
     bool enumerate_cores(vmi_instance_t vmi);
 
-    void check_driver_integrity(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_driver_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_descriptors(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
-    void check_objects(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
+    void check_driver_integrity(drakvuf_t drakvuf);
+    void check_driver_objects(drakvuf_t drakvuf);
+    void check_descriptors(drakvuf_t drakvuf);
+    void check_objects(drakvuf_t drakvuf);
     void check_ci(drakvuf_t drakvuf, drakvuf_trap_info_t* info);
 
     virtual bool stop_impl() override;
@@ -167,6 +165,7 @@ public:
     std::unordered_map<driver_t, sha256_checksum_t> driver_sections_checksums;
     std::unordered_map<driver_t, sha256_checksum_t> driver_object_checksums;
     std::unordered_map<addr_t, sha256_checksum_t> ob_type_initiliazer_crc;
+    std::unordered_map<addr_t, std::vector<addr_t>> ob_type_callbacks;
     std::unordered_map<addr_t, std::vector<addr_t>> ob_callbacks;
     // _DRIVER_OBJECT -> _DEVICE_OBJECT -> [_DEVICE_OBJECT, ...]
     std::unordered_map<driver_t, device_stack_t> driver_stacks;

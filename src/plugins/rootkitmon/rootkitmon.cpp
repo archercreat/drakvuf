@@ -598,39 +598,15 @@ void rootkitmon::check_driver_integrity(drakvuf_t drakvuf)
         {
             {
                 vmi_lock_guard vmi(drakvuf);
-                unicode_string_t* drvname = drakvuf_read_unicode_va(vmi, driver + this->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4);
+                unicode_string_t* drvname = drakvuf_read_unicode_va(drakvuf, driver + this->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4);
                 if (drvname)
                 {
-<<<<<<< HEAD
-                    if (checksum_data.checksum != p_checksum_data.checksum)
-                    {
-                        {
-                            vmi_lock_guard vmi(drakvuf);
-                            unicode_string_t* drvname = drakvuf_read_unicode_va(drakvuf, driver + this->offsets[LDR_DATA_TABLE_ENTRY_BASEDLLNAME], 4);
-                            if (drvname)
-                            {
-                                fmt::print(this->format, "rootkitmon", drakvuf, info,
-                                    keyval("Reason", fmt::Qstr("Driver section modification")),
-                                    keyval("Driver", fmt::Qstr((const char*)drvname->contents)));
-                                vmi_free_unicode_str(drvname);
-                            }
-                            else
-                            {
-                                fmt::print(this->format, "rootkitmon", drakvuf, info,
-                                    keyval("Reason", fmt::Qstr("Driver section modification")),
-                                    keyval("Driver", fmt::Qstr("Unknown")));
-                            }
-                        }
-                    }
-                    break;
-=======
                     report(drakvuf, this->format, "DriverCRC", (const char*)drvname->contents, "Modified");
                     vmi_free_unicode_str(drvname);
                 }
                 else
                 {
                     report(drakvuf, this->format, "DriverCRC", "Unknown", "Modified");
->>>>>>> rootkitmon_patches
                 }
             }
         }
@@ -830,7 +806,7 @@ void rootkitmon::check_objects(drakvuf_t drakvuf)
         const auto& ob_ty_init_crc = calc_checksum(vmi, ob_type + this->offsets[OBJECT_TYPE_TYPE_INFO], this->ob_type_init_size);
         if (this->ob_type_initiliazer_crc[idx] != ob_ty_init_crc)
         {
-            auto type_name = drakvuf_read_unicode_va(vmi, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
+            auto type_name = drakvuf_read_unicode_va(drakvuf, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
             report(drakvuf, format, "ObjectType", type_name ? (const char*)type_name->contents : "", "Modified");
             if (type_name) vmi_free_unicode_str(type_name);
         }
@@ -845,7 +821,7 @@ void rootkitmon::check_objects(drakvuf_t drakvuf)
             continue;
         if (!std::equal(p_ob_type_callbacks.begin(), p_ob_type_callbacks.end(), this->ob_type_callbacks.begin()))
         {
-            auto type_name = drakvuf_read_unicode_va(vmi, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
+            auto type_name = drakvuf_read_unicode_va(drakvuf, ob_type + this->offsets[OBJECT_TYPE_NAME], 4);
             report(drakvuf, format, "ObjectTypeCallbacks", type_name ? (const char*)type_name->contents : "", "Modified");
             if (type_name) vmi_free_unicode_str(type_name);
         }
@@ -988,7 +964,7 @@ unicode_string_t* rootkitmon::get_object_name(vmi_instance_t vmi, addr_t object)
         if (VMI_SUCCESS != vmi_read_8_va(vmi, this->ob_infomask2off + (infomask & 3), 4, &name_info_off))
             throw -1;
         addr_t object_name_info = object_header - name_info_off;
-        return drakvuf_read_unicode_va(vmi, object_name_info + this->offsets[OBJECT_HEADER_NAME_INFO_NAME], 4);
+        return drakvuf_read_unicode_va(drakvuf, object_name_info + this->offsets[OBJECT_HEADER_NAME_INFO_NAME], 4);
     }
     return nullptr;
 }

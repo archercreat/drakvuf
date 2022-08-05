@@ -487,7 +487,7 @@ void setup_windows(drakvuf_t drakvuf, syscalls* s, const syscalls_config* c)
     if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage", &pass.size_rva) ||
         !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "BaseDllName", &pass.name_rva))
     {
-        std::printf("Failed to get _LDR_DATA_TABLE_ENTRY members rva\n");
+        PRINT_DEBUG("Failed to get _LDR_DATA_TABLE_ENTRY members rva\n");
         throw -1;
     }
 

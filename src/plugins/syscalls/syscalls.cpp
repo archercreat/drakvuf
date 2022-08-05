@@ -231,19 +231,15 @@ void print_syscall(
         }
     }
 
-    if (inlined)
-    {
-        fmt::print(s->format, "syscall", drakvuf, info,
-            keyval("Module", fmt::Qstr(std::move(module))),
-            keyval("vCPU", fmt::Nval(info->vcpu)),
-            keyval("CR3", fmt::Xval(info->regs->cr3)),
-            keyval("Syscall", fmt::Nval(nr)),
-            keyval("NArgs", fmt::Nval(args.size())),
-            keyval("Inlined", fmt::Qstr(inlined ? "True" : "False")),
-            s->fmt_args
-        );
-    }
-
+    fmt::print(s->format, "syscall", drakvuf, info,
+        keyval("Module", fmt::Qstr(std::move(module))),
+        keyval("vCPU", fmt::Nval(info->vcpu)),
+        keyval("CR3", fmt::Xval(info->regs->cr3)),
+        keyval("Syscall", fmt::Nval(nr)),
+        keyval("NArgs", fmt::Nval(args.size())),
+        keyval("Inlined", fmt::Qstr(inlined ? "True" : "False")),
+        s->fmt_args
+    );
 }
 
 void print_sysret(

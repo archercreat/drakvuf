@@ -467,6 +467,13 @@ typedef struct
     addr_t name_rva;
 } pass_ctx_t;
 
+typedef struct
+{
+    const char* name;
+    addr_t base;
+    addr_t size;
+} resolve_ctx_t;
+
 struct wrapper_t : public call_result_t
 {
     wrapper_t() : call_result_t()

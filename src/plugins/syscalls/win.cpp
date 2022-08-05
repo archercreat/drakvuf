@@ -240,7 +240,7 @@ static event_response_t syscall_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
                 return false;
             }
             // Check if syscall is outside ntdll.dll module.
-            inlined = ret_addr < s->ntdll_start || ret_addr > s->ntdll_end;
+            inlined = ret_addr < s->ntdll_base || ret_addr > s->ntdll_base + s->ntdll_size;
         }
 
         print_syscall(s, drakvuf, info, w->num, w->type, sc, args, inlined);

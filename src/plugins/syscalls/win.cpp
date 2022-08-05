@@ -209,41 +209,77 @@ static event_response_t syscall_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
 
     std::vector<uint64_t> args = extract_args(drakvuf, info, s->reg_size, sc ? sc->num_args : 0);
 
-    print_syscall(s, drakvuf, info, w->num, w->type, sc, args);
-
-    if ( s->disable_sysret || s->is_stopping() )
-        return 0;
-
-    addr_t ret_addr = drakvuf_get_function_return_address(drakvuf, info);
-    if ( !ret_addr )
-        return 0;
-
-    auto trap = s->register_trap<wrapper_t>(
-            info,
-            ret_cb,
-            breakpoint_by_dtb_searcher());
-    if (!trap)
+    const addr_t rspbase = drakvuf_get_rspbase(drakvuf, info);
+    const addr_t diff    = rspbase - info->regs->rsp;
+    // Here we check if the call originated from usermode (syscall) or from other driver (iat call).
+    // KiSystemCall64 allocates 0x158 + 7 * 8 = 0x190 bytes. The qword at offset 0x28 - return address to usermode:
+    // -0x00:  mov     rsp, gs:1A8h
+    // -0x08:  push    2Bh
+    // -0x10:  push    qword ptr gs:10h
+    // -0x18:  push    r11
+    // -0x20:  push    33h
+    // -0x28:  push    rcx
+    // -0x28:  mov     rcx, r10
+    // -0x30:  sub     rsp, 8
+    // -0x38:  push    rbp
+    // -0x190: sub     rsp, 158h
+    // Since we hook Nt* functions, there are situations when the call originated from other driver and not from usermode.
+    // This checks if stack displacement is less than 0x190 + 8 (call instruction) + N (number of function arguments that are pushed on the stack).
+    if (diff < 0x230)
     {
-        PRINT_DEBUG("Failed to trap syscall return %hu\n", w->num);
-        return 0;
+        bool inlined    = false;
+        bool nt_syscall = info->regs->rip >= s->kernel_base && info->regs->rip <= s->kernel_base + s->kernel_size;
+        // Only Windows x64 nt syscalls are supported.
+        if (s->os == VMI_OS_WINDOWS && !s->is32bit && nt_syscall)
+        {
+            addr_t ret_addr;
+            vmi_lock_guard vmi(drakvuf);
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, rspbase - 0x28, 0, &ret_addr))
+            {
+                PRINT_DEBUG("[syscalls] Failed to read rspbase - 0x28\n");
+                return false;
+            }
+            // Check if syscall is outside ntdll.dll module.
+            inlined = ret_addr < s->ntdll_start || ret_addr > s->ntdll_end;
+        }
+
+        print_syscall(s, drakvuf, info, w->num, w->type, sc, args, inlined);
+
+        if ( s->disable_sysret || s->is_stopping() )
+            return 0;
+
+        addr_t ret_addr = drakvuf_get_function_return_address(drakvuf, info);
+        if ( !ret_addr )
+            return 0;
+
+        auto trap = s->register_trap<wrapper_t>(
+                info,
+                ret_cb,
+                breakpoint_by_dtb_searcher());
+        if (!trap)
+        {
+            PRINT_DEBUG("Failed to trap syscall return %hu\n", w->num);
+            return 0;
+        }
+        trap->breakpoint.module = w->type;
+
+        //After the trap got constructed, enrich its details already with some information we already (and just) know here (at this point).
+
+        //wrapper extends from call_result_t which extends from plugin_params
+        //get_trap_params reinterprets the pointer of trap->data as a pointer to wrapper
+        //Load the information that is saved by hitting the first trap.
+        //With params we can preset the params that the newly risen second breakpoint will receive.
+        auto wr = get_trap_params<wrapper_t>(trap);
+
+        //Save the address of the target thread, address of the rsp (this was the rip-address, which we used for construction) and the value of the CR3 register to the params.
+        wr->set_result_call_params(info);
+
+        //enrich the params of the new/next trap. This information is used later.
+        wr->num = w->num;
+        wr->type = w->type;
+        wr->sc = w->sc;
     }
-    trap->breakpoint.module = w->type;
 
-    //After the trap got constructed, enrich its details already with some information we already (and just) know here (at this point).
-
-    //wrapper extends from call_result_t which extends from plugin_params
-    //get_trap_params reinterprets the pointer of trap->data as a pointer to wrapper
-    //Load the information that is saved by hitting the first trap.
-    //With params we can preset the params that the newly risen second breakpoint will receive.
-    auto wr = get_trap_params<wrapper_t>(trap);
-
-    //Save the address of the target thread, address of the rsp (this was the rip-address, which we used for construction) and the value of the CR3 register to the params.
-    wr->set_result_call_params(info);
-
-    //enrich the params of the new/next trap. This information is used later.
-    wr->num = w->num;
-    wr->type = w->type;
-    wr->sc = w->sc;
 
     return 0;
 }
@@ -413,6 +449,70 @@ void setup_windows(drakvuf_t drakvuf, syscalls* s, const syscalls_config* c)
     addr_t dtb;
     if ( VMI_FAILURE == vmi_pid_to_dtb(vmi, 0, &dtb) )
         throw -1;
+
+    s->ntdll_base = 0;
+    s->ntdll_size = 0;
+
+    addr_t explorer;
+    if (!drakvuf_find_process(drakvuf, ~0, "explorer.exe", &explorer))
+    {
+        PRINT_DEBUG("Couldn't find explorer.exe\n");
+        throw -1;
+    }
+
+    drakvuf_enumerate_process_modules(drakvuf, explorer,
+        [](drakvuf_t drakvuf, const module_info_t* module_info, bool* need_free, bool* need_stop, void* ctx)
+    {
+        syscalls* s = reinterpret_cast<syscalls*>(ctx);
+
+        if (!strcmp((const char*)module_info->base_name->contents, "ntdll.dll"))
+        {
+            s->ntdll_base = module_info->base_addr;
+            s->ntdll_size = module_info->size;
+            *need_stop    = true;
+        }
+        return true;
+    }, s);
+
+    if (!s->ntdll_base || !s->ntdll_size)
+    {
+        PRINT_DEBUG("Did not find ntdll.dll in explorer.exe\n");
+        throw -1;
+    }
+
+    s->kernel_size = 0;
+    // Get ntoskrnl size.
+    pass_ctx_t pass;
+    pass.plugin = s;
+    if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage", &pass.size_rva) ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "BaseDllName", &pass.name_rva))
+    {
+        std::printf("Failed to get _LDR_DATA_TABLE_ENTRY members rva\n");
+        throw -1;
+    }
+
+    drakvuf_enumerate_drivers(drakvuf, [](drakvuf_t drakvuf, addr_t ldr_entry, void* ctx)
+    {
+        pass_ctx_t* pass = static_cast<pass_ctx_t*>(ctx);
+
+        auto name = drakvuf_read_unicode_va(drakvuf, ldr_entry + pass->name_rva, 0);
+        if (name != nullptr)
+        {
+            if (!strcmp((const char*)name->contents, "ntoskrnl.exe"))
+            {
+                vmi_lock_guard vmi(drakvuf);
+                if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_entry + pass->size_rva, 0, &static_cast<syscalls*>(pass->plugin)->kernel_size))
+                    throw -1;
+            }
+            vmi_free_unicode_str(name);
+        }
+    }, &pass);
+
+    if (!s->kernel_size)
+    {
+        PRINT_DEBUG("Failed to get kernel image size\n");
+        throw -1;
+    }
 
 #ifdef DRAKVUF_DEBUG
     uint16_t ntbuild;

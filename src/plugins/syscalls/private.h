@@ -460,6 +460,13 @@ typedef struct
     const arg_t* args;
 } syscall_t;
 
+typedef struct
+{
+    void* plugin;
+    addr_t size_rva;
+    addr_t name_rva;
+} pass_ctx_t;
+
 struct wrapper_t : public call_result_t
 {
     wrapper_t() : call_result_t()
@@ -486,7 +493,8 @@ void print_syscall(
     int nr,
     std::string&& module,
     const syscall_t* sc,
-    const std::vector<uint64_t>& args
+    const std::vector<uint64_t>& args,
+    bool inlined
 );
 
 void print_sysret(

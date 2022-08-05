@@ -1015,3 +1015,17 @@ bool drakvuf_check_return_context(drakvuf_t drakvuf, drakvuf_trap_info_t* info, 
 
     return ret;
 }
+
+addr_t drakvuf_get_rspbase(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
+{
+    addr_t ret = 0;
+
+    if (drakvuf->osi.get_rspbase)
+    {
+        drakvuf_lock_and_get_vmi(drakvuf);
+        ret = drakvuf->osi.get_rspbase(drakvuf, info);
+        drakvuf_release_vmi(drakvuf);
+    }
+
+    return ret;
+}

@@ -168,6 +168,7 @@ static const char* win_offset_names[__WIN_OFFSETS_MAX][2] =
     [KPCR_PRCBDATA] = {"_KPCR", "PrcbData" },
     [KPCR_IRQL] = { "_KPCR", "Irql" },
     [KPRCB_CURRENTTHREAD] = { "_KPRCB", "CurrentThread" },
+    [KPRCB_RSPBASE] = { "_KPRCB", "RspBase" },
     [KTHREAD_APCSTATE] = {"_KTHREAD", "ApcState" },
     [KTHREAD_APCSTATEINDEX] = {"_KTHREAD", "ApcStateIndex" },
     [KTHREAD_PROCESS] = {"_KTHREAD", "Process" },

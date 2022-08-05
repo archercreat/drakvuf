@@ -208,7 +208,7 @@ static uint64_t transform_value(drakvuf_t drakvuf, drakvuf_trap_info_t* info, co
 void print_syscall(
     syscalls* s, drakvuf_t drakvuf, drakvuf_trap_info_t* info,
     int nr, std::string&& module, const syscall_t* sc,
-    const std::vector<uint64_t>& args
+    const std::vector<uint64_t>& args, bool inlined
 )
 {
     if (sc)
@@ -231,14 +231,19 @@ void print_syscall(
         }
     }
 
-    fmt::print(s->format, "syscall", drakvuf, info,
-        keyval("Module", fmt::Qstr(std::move(module))),
-        keyval("vCPU", fmt::Nval(info->vcpu)),
-        keyval("CR3", fmt::Xval(info->regs->cr3)),
-        keyval("Syscall", fmt::Nval(nr)),
-        keyval("NArgs", fmt::Nval(args.size())),
-        s->fmt_args
-    );
+    if (inlined)
+    {
+        fmt::print(s->format, "syscall", drakvuf, info,
+            keyval("Module", fmt::Qstr(std::move(module))),
+            keyval("vCPU", fmt::Nval(info->vcpu)),
+            keyval("CR3", fmt::Xval(info->regs->cr3)),
+            keyval("Syscall", fmt::Nval(nr)),
+            keyval("NArgs", fmt::Nval(args.size())),
+            keyval("Inlined", fmt::Qstr(inlined ? "True" : "False")),
+            s->fmt_args
+        );
+    }
+
 }
 
 void print_sysret(

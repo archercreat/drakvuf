@@ -620,7 +620,7 @@ bool callbackmon::stop_impl()
 
                 for (const auto& cb : cbs)
                 {
-                    if (std::find(curr_openblk.begin(), curr_openblk.end(), cb) != curr_openblk.end())
+                    if (std::find(curr_openblk.begin(), curr_openblk.end(), cb) == curr_openblk.end())
                         report(drakvuf, cb.first, cb.second, "Modified");
                 }
             }

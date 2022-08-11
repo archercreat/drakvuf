@@ -107,6 +107,7 @@
 #include <mutex>
 
 #include "callbackmon.h"
+#include "private.h"
 
 static constexpr uint16_t win_vista_ver     = 6000;
 static constexpr uint16_t win_vista_sp1_ver = 6001;
@@ -208,7 +209,7 @@ static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
     addr_t base;
     uint32_t size;
     if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->plugin->ldr_data_base_rva, 4, &base) ||
-        VMI_SUCCESS != vmi_read_32_va(vmi, ldr_table + data->plugin->ldr_data_size_rva, 4, &size))
+        VMI_SUCCESS != vmi_read_32_va(vmi,   ldr_table + data->plugin->ldr_data_size_rva, 4, &size))
     {
         PRINT_DEBUG("[CALLBACKMON] Can't read driver base and size for ldr_table %" PRIx64 "\n", ldr_table);
         return;
@@ -234,23 +235,170 @@ static inline std::pair<std::string, addr_t> get_module_by_addr(drakvuf_t drakvu
     return { ctx.name, ctx.base_va };
 }
 
+static protocol_cb_t collect_protocol_callbacks(drakvuf_t drakvuf, vmi_instance_t vmi, callbackmon* plugin, addr_t protocol_block)
+{
+    protocol_cb_t out;
+    // Read first open block.
+    //
+    addr_t open_block{};
+    if (VMI_SUCCESS != vmi_read_addr_va(vmi, protocol_block + plugin->generic_offsets[NDIS_PROTOCOL_BLOCK_OPENQUEUE], 0, &open_block) || !open_block)
+    {
+        return out;
+    }
+
+    while (open_block)
+    {
+        // Read all callbacks.
+        //
+        std::vector<api_bind_t> callbacks;
+        for (int i = 0; i < __OFFSET_OPEN_MAX; i++)
+        {
+            // We don't care about struct name so we use w7 by default.
+            //
+            const auto [_, cb_name] = offset_open_names_w7[i];
+            addr_t cb;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, open_block + plugin->open_offsets[i], 0, &cb))
+            {
+                PRINT_DEBUG("[CALLBACKMON] Failed to read api\n");
+                throw -1;
+            }
+            callbacks.push_back(std::make_pair(cb_name, cb));
+        }
+
+        // Read corresponding miniport block.
+        //
+        addr_t miniport_block{};
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, open_block + plugin->generic_offsets[NDIS_OPEN_BLOCK_MINIPORTHANDLE], 0, &miniport_block) || !miniport_block)
+        {
+            PRINT_DEBUG("[CALLBACKMON] Failed to read miniport block!\n");
+            throw -1;
+        }
+
+        for (int i = 0; i < __OFFSET_MINIPORT_MAX; i++)
+        {
+            const auto [_, cb_name] = offset_miniport_names[i];
+            addr_t cb;
+            if (VMI_SUCCESS != vmi_read_addr_va(vmi, miniport_block + plugin->miniport_offsets[i], 0, &cb))
+            {
+                PRINT_DEBUG("[CALLBACKMON] Failed to read miniport api\n");
+                throw -1;
+            }
+            callbacks.push_back(std::make_pair(cb_name, cb));
+        }
+
+        out.insert({ open_block, std::move(callbacks) });
+
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, open_block + plugin->generic_offsets[NDIS_OPEN_BLOCK_PROTOCOLNEXTOPEN], 0, &open_block))
+        {
+            PRINT_DEBUG("[CALLBACKMON] Failed to read protocol next open\n");
+            throw -1;
+        }
+    }
+    return out;
+}
+
+static bool consume_ndis_protocols(drakvuf_t drakvuf, vmi_instance_t vmi, callbackmon* plugin, const char* profile)
+{
+    addr_t ndis_protocol_list_rva;
+
+    const auto winver = vmi_get_winver(vmi);
+
+    const char* protocol_symname  = winver == VMI_OS_WINDOWS_10 ? "?ndisProtocolList@@3PEAU_NDIS_PROTOCOL_BLOCK@@EA" : "ndisProtocolList";
+
+    auto profile_json = json_object_from_file(profile);
+    if (!profile_json)
+    {
+        PRINT_DEBUG("[CALLBACKMON] Failed to load profile\n");
+        return false;
+    }
+
+    // Locate core symbols.
+    //
+    if (winver == VMI_OS_WINDOWS_10)
+    {
+        if (!json_get_struct_members_array_rva(drakvuf, profile_json, offset_generic_names_w10, __OFFSET_GENERIC_MAX, plugin->generic_offsets) ||
+            !json_get_struct_members_array_rva(drakvuf, profile_json, offset_open_names_w10,    __OFFSET_OPEN_MAX,    plugin->open_offsets))
+        {
+            json_object_put(profile_json);
+            return false;
+        }
+    }
+    else
+    {
+        if (!json_get_struct_members_array_rva(drakvuf, profile_json, offset_generic_names_w7, __OFFSET_GENERIC_MAX, plugin->generic_offsets) ||
+            !json_get_struct_members_array_rva(drakvuf, profile_json, offset_open_names_w7,    __OFFSET_OPEN_MAX,    plugin->open_offsets))
+        {
+            json_object_put(profile_json);
+            return false;
+        }
+    }
+
+    if (!json_get_struct_members_array_rva(drakvuf, profile_json, offset_miniport_names, __OFFSET_MINIPORT_MAX, plugin->miniport_offsets) ||
+        !json_get_symbol_rva(drakvuf, profile_json, protocol_symname, &ndis_protocol_list_rva))
+    {
+        json_object_put(profile_json);
+        return false;
+    }
+    json_object_put(profile_json);
+    // Read global values.
+    //
+    addr_t list_head, ndis_base, protocol_head;
+    if (VMI_SUCCESS != vmi_read_addr_ksym(vmi, "PsLoadedModuleList", &list_head)  || 
+        !drakvuf_get_module_base_addr(drakvuf, list_head, "NDIS.SYS", &ndis_base) ||
+        VMI_SUCCESS != vmi_read_addr_va(vmi, ndis_base + ndis_protocol_list_rva, 0, &protocol_head))
+    {
+        return false;
+    }
+    // Iterate all installed protocols.
+    //
+    while (protocol_head)
+    {
+        plugin->ndis_protocol_cb.insert({ protocol_head, collect_protocol_callbacks(drakvuf, vmi, plugin, protocol_head) });
+        // Read next protocol address.
+        //
+        if (VMI_SUCCESS != vmi_read_addr_va(vmi, protocol_head + plugin->generic_offsets[NDIS_PROTOCOL_BLOCK_NEXTPROTOCOL], 0, &protocol_head))
+        {
+            PRINT_DEBUG("[CALLBACKMON] Failed to read next protocol\n");
+            throw -1;
+        }
+    }
+    return true;
+}
+
+void callbackmon::report(drakvuf_t drakvuf, const char* list_name, addr_t addr, const char* action)
+{
+    const auto& [name, base] = get_module_by_addr(drakvuf, this, addr);
+    fmt::print(format, "callbackmon", drakvuf, nullptr,
+        keyval("Type", fmt::Qstr("Callback")),
+        keyval("ListName", fmt::Qstr(list_name)),
+        keyval("Module", fmt::Qstr(name)),
+        keyval("RVA", fmt::Xval(base ? addr - base : 0)),
+        keyval("Action", fmt::Qstr(action))
+    );
+}
+
 callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, output_format_t output)
-    : pluginex(drakvuf, output), config{ *config }, format{ output }
+    : pluginex(drakvuf, output), config{ *config }, format{ output }, 
+    generic_offsets(new size_t[__OFFSET_GENERIC_MAX]), 
+    open_offsets(new size_t[__OFFSET_OPEN_MAX]), 
+    miniport_offsets(new size_t[__OFFSET_MINIPORT_MAX])
 {
     const addr_t krnl_base = drakvuf_get_kernel_base(drakvuf);
     const size_t ptrsize   = drakvuf_get_address_width(drakvuf);
     const size_t fast_ref  = (ptrsize == 8 ? 15 : 7);
     addr_t drv_obj_rva, mj_array_rva;
-    if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_DEVICE_OBJECT", "DriverObject", &drv_obj_rva) ||
-        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_DRIVER_OBJECT", "MajorFunction", &mj_array_rva) ||
-        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "FullDllName",  &ldr_data_name_rva) ||
-        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",      &ldr_data_base_rva) ||
-        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage",  &ldr_data_size_rva))
+    if (!drakvuf_get_kernel_struct_member_rva(drakvuf, "_DEVICE_OBJECT", "DriverObject",       &drv_obj_rva)       ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_DRIVER_OBJECT", "MajorFunction",      &mj_array_rva)      ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "FullDllName", &ldr_data_name_rva) ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "DllBase",     &ldr_data_base_rva) ||
+        !drakvuf_get_kernel_struct_member_rva(drakvuf, "_LDR_DATA_TABLE_ENTRY", "SizeOfImage", &ldr_data_size_rva))
     {
         throw -1;
     }
 
     vmi_lock_guard vmi(drakvuf);
+    const uint16_t ver = vmi_get_win_buildnumber(vmi);
+    
     auto get_ksymbol_va = [&](const char* symb) -> addr_t
     {
         addr_t rva = 0;
@@ -344,7 +492,6 @@ callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, ou
     auto consume_wfpcallouts = [&](const char* profile) -> std::vector<addr_t>
     {
         std::vector<addr_t> out;
-        const uint16_t ver = vmi_get_win_buildnumber(vmi);
         // only Windows 7 sp1 x64 and Windows 10 1803 x64 currently supported
         if (wfp_offsets.find(ver) == wfp_offsets.end() || !profile)
             return {};
@@ -387,6 +534,14 @@ callbackmon::callbackmon(drakvuf_t drakvuf, const callbackmon_config* config, ou
         return out;
     };
 
+    if (config->ndis_profile && (ver == win_7_sp1_ver || ver == win_10_1803_ver))
+    {
+        if (!consume_ndis_protocols(drakvuf, vmi, this, config->ndis_profile))
+        {
+            PRINT_DEBUG("[CALLBACKMON] Failed to process ndis callbacks\n");
+            throw -1;
+        }
+    }
     this->process_cb   = consume_callbacks_ex("PspCreateProcessNotifyRoutine", get_cb_table_size(vmi, "process"));
     this->thread_cb    = consume_callbacks_ex("PspCreateThreadNotifyRoutine",  get_cb_table_size(vmi, "thread"));
     this->image_cb     = consume_callbacks_ex("PspLoadImageNotifyRoutine",     get_cb_table_size(vmi, "image"));
@@ -420,25 +575,13 @@ bool callbackmon::stop_impl()
         winver = vmi_get_win_buildnumber(vmi);
     }
 
-    auto report = [&](const auto& list_name, const auto& addr, const auto& action)
-    {
-        const auto& [name, base] = get_module_by_addr(drakvuf, this, addr);
-        fmt::print(format, "callbackmon", drakvuf, nullptr,
-            keyval("Type", fmt::Qstr("Callback")),
-            keyval("ListName", fmt::Qstr(list_name)),
-            keyval("Module", fmt::Qstr(name)),
-            keyval("RVA", fmt::Xval(base ? addr - base : 0)),
-            keyval("Action", fmt::Qstr(action))
-        );
-    };
-
     auto check_callbacks = [&](const auto& previous, const auto& current, const auto& list_name)
     {
         auto walk_list = [&](const auto& previous, const auto& current, const auto& action)
         {
             for (const auto& cb : current)
                 if (std::find(previous.begin(), previous.end(), cb) == previous.end())
-                    report(list_name, cb, action);
+                    report(drakvuf, list_name, cb, action);
         };
         walk_list(previous, current, "Added");
         walk_list(current, previous, "Removed");
@@ -450,36 +593,69 @@ bool callbackmon::stop_impl()
         {
             for (size_t i = 0; i < callout_syms.size(); i++)
                 if (previous[i] != current[i])
-                    report(callout_syms[i], current[i], "Replaced");
+                    report(drakvuf, callout_syms[i], current[i], "Replaced");
         }
         else
         {
             if (previous[0] != current[0])
-                report("PsWin32CallBack", current[0], "Replaced");
+                report(drakvuf, "PsWin32CallBack", current[0], "Replaced");
         }
     };
 
-    check_callbacks(this->process_cb,   snapshot->process_cb,    "ProcessNotify");
-    check_callbacks(this->thread_cb,    snapshot->thread_cb,     "ThreadNotify");
-    check_callbacks(this->image_cb,     snapshot->image_cb,      "ImageNotify");
-    check_callbacks(this->bugcheck_cb,  snapshot->bugcheck_cb,   "BugCheck");
-    check_callbacks(this->bcreason_cb,  snapshot->bcreason_cb,   "BugCheckReason");
-    check_callbacks(this->registry_cb,  snapshot->registry_cb,   "Registry");
-    check_callbacks(this->logon_cb,     snapshot->logon_cb,      "LogonSession");
-    check_callbacks(this->power_cb,     snapshot->power_cb,      "PowerSettings");
-    check_callbacks(this->shtdwn_cb,    snapshot->shtdwn_cb,     "Shutdown");
-    check_callbacks(this->shtdwn_lst_cb, snapshot->shtdwn_lst_cb, "ShutdownLast");
-    check_callbacks(this->dbgprint_cb,  snapshot->dbgprint_cb,   "DbgPrint");
-    check_callbacks(this->fschange_cb,  snapshot->fschange_cb,   "FsChange");
-    check_callbacks(this->drvreinit_cb, snapshot->drvreinit_cb,  "DriverReinit");
-    check_callbacks(this->drvreinit2_cb, snapshot->drvreinit2_cb, "DriverReinitBoot");
-    check_callbacks(this->nmi_cb,       snapshot->nmi_cb,        "NMI");
-    check_callbacks(this->priority_cb,  snapshot->priority_cb,   "UpdatePriority");
-    check_callbacks(this->pnp_prof_cb,  snapshot->pnp_prof_cb,   "PnPProfile");
-    check_callbacks(this->pnp_class_cb, snapshot->pnp_class_cb,  "PnPClass");
-    check_callbacks(this->emp_cb,       snapshot->emp_cb,        "EMP");
-    check_callbacks(this->wfpcallouts,  snapshot->wfpcallouts,   "WfpCallouts");
-    check_callouts (this->w32callouts,  snapshot->w32callouts);
+    auto check_ndis_cbs = [&](const auto& previous, const auto& current)
+    {
+        for (const auto& [prot_addr, callbacks] : previous)
+        {
+            if (current.find(prot_addr) == current.end())
+                continue;
+
+            const auto& curr_prot = current.at(prot_addr);
+
+            for (const auto& [openblk, cbs] : callbacks)
+            {
+                if (curr_prot.find(openblk) == curr_prot.end())
+                    continue;
+
+                const auto& curr_openblk = curr_prot.at(openblk);
+
+                for (const auto& cb : cbs)
+                {
+                    if (std::find(curr_openblk.begin(), curr_openblk.end(), cb) != curr_openblk.end())
+                        report(drakvuf, cb.first, cb.second, "Modified");
+                }
+            }
+        }
+    };
+
+    check_callbacks(this->process_cb,       snapshot->process_cb,    "ProcessNotify");
+    check_callbacks(this->thread_cb,        snapshot->thread_cb,     "ThreadNotify");
+    check_callbacks(this->image_cb,         snapshot->image_cb,      "ImageNotify");
+    check_callbacks(this->bugcheck_cb,      snapshot->bugcheck_cb,   "BugCheck");
+    check_callbacks(this->bcreason_cb,      snapshot->bcreason_cb,   "BugCheckReason");
+    check_callbacks(this->registry_cb,      snapshot->registry_cb,   "Registry");
+    check_callbacks(this->logon_cb,         snapshot->logon_cb,      "LogonSession");
+    check_callbacks(this->power_cb,         snapshot->power_cb,      "PowerSettings");
+    check_callbacks(this->shtdwn_cb,        snapshot->shtdwn_cb,     "Shutdown");
+    check_callbacks(this->shtdwn_lst_cb,    snapshot->shtdwn_lst_cb, "ShutdownLast");
+    check_callbacks(this->dbgprint_cb,      snapshot->dbgprint_cb,   "DbgPrint");
+    check_callbacks(this->fschange_cb,      snapshot->fschange_cb,   "FsChange");
+    check_callbacks(this->drvreinit_cb,     snapshot->drvreinit_cb,  "DriverReinit");
+    check_callbacks(this->drvreinit2_cb,    snapshot->drvreinit2_cb, "DriverReinitBoot");
+    check_callbacks(this->nmi_cb,           snapshot->nmi_cb,        "NMI");
+    check_callbacks(this->priority_cb,      snapshot->priority_cb,   "UpdatePriority");
+    check_callbacks(this->pnp_prof_cb,      snapshot->pnp_prof_cb,   "PnPProfile");
+    check_callbacks(this->pnp_class_cb,     snapshot->pnp_class_cb,  "PnPClass");
+    check_callbacks(this->emp_cb,           snapshot->emp_cb,        "EMP");
+    check_callbacks(this->wfpcallouts,      snapshot->wfpcallouts,   "WfpCallouts");
+    check_callouts (this->w32callouts,      snapshot->w32callouts);
+    check_ndis_cbs (this->ndis_protocol_cb, snapshot->ndis_protocol_cb);
 
     return true;
+}
+
+callbackmon::~callbackmon()
+{
+    delete[] generic_offsets;
+    delete[] open_offsets;
+    delete[] miniport_offsets;
 }

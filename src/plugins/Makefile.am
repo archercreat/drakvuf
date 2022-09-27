@@ -381,6 +381,10 @@ if PLUGIN_UNIXSOCKETMON
 sources += unixsocketmon/unixsocketmon.cpp
 sources += unixsocketmon/unixsocketmon.h
 sources += unixsocketmon/private.h
+
+if PLUGIN_MEMACCESSMON
+sources += memaccessmon/memaccessmon.cpp
+sources += memaccessmon/memaccessmon.h
 endif
 
 ###############################################################################

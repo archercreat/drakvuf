@@ -560,6 +560,15 @@ AC_ARG_ENABLE([plugin_unixsocketmon],
 AM_CONDITIONAL([PLUGIN_UNIXSOCKETMON], [test x$plugin_unixsocketmon = xyes])
 if test x$plugin_unixsocketmon = xyes; then
   AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_UNIXSOCKETMON, 1, "")
+
+AC_ARG_ENABLE([plugin_memaccessmon],
+  [AS_HELP_STRING([--disable-plugin-memaccessmon],
+    [Enable memaccessmon plugin @<:@yes@:>@])],
+  [plugin_memaccessmon="$enableval"],
+  [plugin_memaccessmon="yes"])
+AM_CONDITIONAL([PLUGIN_MEMACCESSMON], [test x$plugin_memaccessmon = xyes])
+if test x$plugin_memaccessmon = xyes; then
+  AC_DEFINE_UNQUOTED(ENABLE_PLUGIN_MEMACCESSMON, 1, "")
 fi
 
 #####################################################
@@ -841,40 +850,41 @@ Build system type: $build
 Installation prefix: $prefix
 -------------------------------------------------------------------------------
 DRAKVUF Plugins
-Syscalls:           $plugin_syscalls
-Poolmon:            $plugin_poolmon
-Filetracer:         $plugin_filetracer
-Fileextractor:      $plugin_fileextractor
-Objmon:             $plugin_objmon
-Exmon:              $plugin_exmon
-SSDTmon:            $plugin_ssdtmon
-CPUIDmon:           $plugin_cpuidmon
-Debugmon:           $plugin_debugmon
-Socketmon:          $plugin_socketmon
-Regmon:             $plugin_regmon
-Procmon:            $plugin_procmon
-BSODmon:            $plugin_bsodmon
-EnvMon:             $plugin_envmon
-CrashMon:           $plugin_crashmon
-ClipboardMon:       $plugin_clipboardmon
-WindowMon:          $plugin_windowmon
-LibraryMon:         $plugin_librarymon
-DKOMmon:            $plugin_dkommon
-MEMDump:            $plugin_memdump
-ProcDump:           $plugin_procdump
-ProcDump2:          $plugin_procdump2
-APIMon:             $plugin_apimon
-RPCMon:             $plugin_rpcmon
-TLSMon:             $plugin_tlsmon
-Codemon:            $plugin_codemon
-Exploitmon:         $plugin_exploitmon
-LibHookTest:        $plugin_libhooktest
-IPT:                $plugin_ipt
-HidSim:             $plugin_hidsim
-Rootkitmon:         $plugin_rootkitmon
-Spraymon:           $plugin_spraymon
-Callbackmon:        $plugin_callbackmon
-HideVM:             $plugin_hidevm
+Syscalls:      $plugin_syscalls
+Poolmon:       $plugin_poolmon
+Filetracer:    $plugin_filetracer
+Fileextractor: $plugin_fileextractor
+Objmon:        $plugin_objmon
+Exmon:         $plugin_exmon
+SSDTmon:       $plugin_ssdtmon
+CPUIDmon:      $plugin_cpuidmon
+Debugmon:      $plugin_debugmon
+Socketmon:     $plugin_socketmon
+Regmon:        $plugin_regmon
+Procmon:       $plugin_procmon
+BSODmon:       $plugin_bsodmon
+EnvMon:        $plugin_envmon
+CrashMon:      $plugin_crashmon
+ClipboardMon:  $plugin_clipboardmon
+WindowMon:     $plugin_windowmon
+LibraryMon:    $plugin_librarymon
+DKOMmon:       $plugin_dkommon
+MEMDump:       $plugin_memdump
+ProcDump:      $plugin_procdump
+ProcDump2:     $plugin_procdump2
+APIMon:        $plugin_apimon
+RPCMon:        $plugin_rpcmon
+TLSMon:        $plugin_tlsmon
+Codemon:       $plugin_codemon
+Exploitmon:    $plugin_exploitmon
+LibHookTest:   $plugin_libhooktest
+IPT:           $plugin_ipt
+HidSim:        $plugin_hidsim
+Rootkitmon:    $plugin_rootkitmon
+Spraymon:      $plugin_spraymon
+Callbackmon:   $plugin_callbackmon
+HideVM:        $plugin_hidevm
+Memaccessmon:  $plugin_memaccessmon
 -------------------------------------------------------------------------------
 Deprecated Plugins
 WMIMon:             $plugin_wmimon

@@ -232,7 +232,13 @@ addr_t win_get_rspbase(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
         return 0;
     }
 
-    if (VMI_SUCCESS != vmi_read_addr_va(vmi, kpcr + prcb + drakvuf->offsets[KPRCB_RSPBASE], 0, &rspbase))
+    printf("prcb: 0x%lx kpcr: 0x%lx\n", prcb, kpcr);
+
+    vmi_read_addr_va(vmi, kpcr + prcb, 0, &prcb);
+
+    printf("prcb: 0x%lx\n", prcb);
+
+    if (VMI_SUCCESS != vmi_read_addr_va(vmi, prcb + drakvuf->offsets[KPRCB_RSPBASE], 0, &rspbase))
     {
         return 0;
     }
@@ -1241,34 +1247,32 @@ bool win_enumerate_processes( drakvuf_t drakvuf, void (*visitor_func)(drakvuf_t 
     return true;
 }
 
-bool win_enumerate_drivers( drakvuf_t drakvuf, void (*visitor_func)(drakvuf_t drakvuf, addr_t eprocess, void* visitor_ctx), void* visitor_ctx )
+bool win_enumerate_drivers( drakvuf_t drakvuf, process_const_module_visitor_t visitor_func, void* visitor_ctx )
 {
-    addr_t list_head;
-    if (!win_find_driver_list(drakvuf, &list_head))
+    addr_t driver_list_head;
+    if (!win_find_driver_list(drakvuf, &driver_list_head))
         return false;
-    addr_t current_list_entry = list_head;
-    addr_t next_list_entry;
 
-    if (!win_find_next_process_list_entry(drakvuf, current_list_entry, &next_list_entry))
-    {
-        PRINT_DEBUG("Failed to read next pointer at 0x%"PRIx64" before entering loop\n", current_list_entry);
+    addr_t eprocess, dtb;
+    if (!drakvuf_get_process_by_pid(drakvuf, 4, &eprocess, &dtb))
         return false;
-    }
 
-    do
+    ACCESS_CONTEXT(ctx,
+        .translate_mechanism = VMI_TM_PROCESS_DTB,
+        .dtb = dtb
+    );
+
+    struct enumerate_modules_visitor_ctx enumeration_ctx =
     {
-        visitor_func(drakvuf, current_list_entry, visitor_ctx);
-
-        current_list_entry = next_list_entry;
-
-        if (!win_find_next_process_list_entry(drakvuf, current_list_entry, &next_list_entry))
-        {
-            PRINT_DEBUG("Failed to read next pointer in loop at %"PRIx64"\n", current_list_entry);
-            return false;
-        }
-    } while (next_list_entry != list_head);
-
-    return true;
+        .eprocess       = eprocess,
+        .dtb            = dtb,
+        .pid            = 4,
+        .is_wow_process = 0,
+        .is_wow         = false,
+        .inner_func     = visitor_func,
+        .inner_ctx      = visitor_ctx,
+    };
+    return win_enumerate_module_info_ctx(drakvuf, driver_list_head, &ctx, enumerate_modules_visitor, &enumeration_ctx);
 }
 
 bool win_enumerate_processes_with_module( drakvuf_t drakvuf, const char* module_name, bool (*visitor_func)(drakvuf_t drakvuf, const module_info_t* module_info, void* visitor_ctx), void* visitor_ctx )

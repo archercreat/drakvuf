@@ -201,31 +201,16 @@ static inline size_t get_power_cb_offset(vmi_instance_t vmi)
         return vmi_get_address_width(vmi) == 8 ? 0x40 : 0x28;
 }
 
-static void driver_visitor(drakvuf_t drakvuf, addr_t ldr_table, void* ctx)
+static bool driver_visitor(drakvuf_t drakvuf, const module_info_t* info, bool*, bool*, void* ctx)
 {
     auto data = static_cast<pass_ctx*>(ctx);
 
-    vmi_lock_guard vmi(drakvuf);
-    addr_t base;
-    uint32_t size;
-    if (VMI_SUCCESS != vmi_read_addr_va(vmi, ldr_table + data->plugin->ldr_data_base_rva, 4, &base) ||
-        VMI_SUCCESS != vmi_read_32_va(vmi, ldr_table + data->plugin->ldr_data_size_rva, 4, &size))
+    if (data->cb_va >= info->base_addr && data->cb_va < info->base_addr + info->size)
     {
-        PRINT_DEBUG("[CALLBACKMON] Can't read driver base and size for ldr_table %" PRIx64 "\n", ldr_table);
-        return;
+        data->name.assign(reinterpret_cast<char*>(info->base_name->contents));
+        data->base_va = info->base_addr;
     }
-
-    if (data->cb_va >= base && data->cb_va < base + size)
-    {
-        unicode_string_t* module_name = drakvuf_read_unicode_va(drakvuf, ldr_table + data->plugin->ldr_data_name_rva, 4);
-        if (module_name && module_name->contents)
-        {
-            data->name.assign(reinterpret_cast<char*>(module_name->contents));
-            vmi_free_unicode_str(module_name);
-        }
-
-        data->base_va = base;
-    }
+    return true;
 }
 
 static inline std::pair<std::string, addr_t> get_module_by_addr(drakvuf_t drakvuf, callbackmon* plugin, addr_t addr)

@@ -120,7 +120,8 @@ static bool enum_modules_cb(drakvuf_t dravkuf, const module_info_t* module_info,
 {
     auto plugin   = static_cast<win_syscalls*>(ctx);
     auto& modules = plugin->procs[module_info->pid];
-    modules.push_back({
+    modules.push_back(
+    {
         .name = (const char*)module_info->base_name->contents,
         .base = module_info->base_addr,
         .size = module_info->size
@@ -256,27 +257,16 @@ static std::optional<std::string> resolve_module(drakvuf_t drakvuf, addr_t addr,
                 {
                     name.erase(0, sub + 1);
                 }
-                mods.push_back({
+                mods.push_back(
+                {
                     .name = std::move(name),
                     .base = mmvad.starting_vpn << 12,
-                    .size = (mmvad.ending_vpn - mmvad.starting_vpn) << 12
+                        .size = (mmvad.ending_vpn - mmvad.starting_vpn) << 12
                 });
                 vmi_free_unicode_str(u_name);
                 return mods.back().name;
             }
-            else
-            {
-                std::printf("Failed to read unicode string\n");
-            }
         }
-        else
-        {
-            std::printf("No file_name_ptr\n");
-        }
-    }
-    else
-    {
-        std::printf("Failed to find mmvad for 0x%lx\n", addr);
     }
     return {};
 }
@@ -310,8 +300,6 @@ static addr_t get_syscall_retaddr(drakvuf_t drakvuf, drakvuf_trap_info_t* info, 
     // -0x190: sub     rsp, 158h
     //
     addr_t user_ret_addr{};
-    auto rsp = drakvuf_get_rspbase(drakvuf, info);
-    std::printf("rsp base: 0x%lx\n", rsp);
     vmi_read_addr_va(vmi, drakvuf_get_rspbase(drakvuf, info) - 0x28, 0, &user_ret_addr);
     return user_ret_addr;
 }
@@ -319,7 +307,7 @@ static addr_t get_syscall_retaddr(drakvuf_t drakvuf, drakvuf_trap_info_t* info, 
 /// Get module that called Nt (syscall) function and previous mode.
 ///
 static std::pair<privilege_mode_t, std::optional<std::string>>
-get_syscall_retinfo(drakvuf_t drakvuf, drakvuf_trap_info_t* info, win_syscalls* s)
+    get_syscall_retinfo(drakvuf_t drakvuf, drakvuf_trap_info_t* info, win_syscalls* s)
 {
     if (s->is32bit)
     {
@@ -353,11 +341,7 @@ static event_response_t syscall_cb(drakvuf_t drakvuf, drakvuf_trap_info_t* info)
     std::vector<uint64_t> args = extract_args(drakvuf, info, s->register_size, sc ? sc->num_args : 0);
 
     auto [mode, module] = get_syscall_retinfo(drakvuf, info, s);
-    if (!module.has_value())
-    {
-        std::printf("Failed to find module :(\n");
-    }
-    // s->print_syscall(drakvuf, info, w->num, w->type, sc, std::move(args), mode, std::move(module));
+    s->print_syscall(drakvuf, info, w->num, w->type, sc, std::move(args), mode, std::move(module));
 
     if (s->disable_sysret || s->is_stopping())
         return VMI_EVENT_RESPONSE_NONE;
